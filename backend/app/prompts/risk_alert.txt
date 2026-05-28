@@ -1,0 +1,7 @@
+TODO: Prompt de alerta de riesgo — derivar a docente.
+Cuando se detectan indicadores de riesgo (inactividad 5+ días, 3+ sesiones
+estancado, expresiones de frustración o desmotivación): expresar
+preocupación empática, preguntar qué pasa, ofrecer pausa, derivar
+a docente o bienestar universitario si es necesario.
+Referencia: Marco Pedagógico V2, sección 9 (ética É·5).
+Variables: {{student_name}}, {{risk_indicators}}.

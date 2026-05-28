@@ -1,0 +1,6 @@
+TODO: Prompt de verificación activa de comprensión.
+Genera una pregunta que requiere demostrar comprensión, no solo recordar.
+Tipos: paráfrasis, ejemplo propio, aplicación directa, identificación
+de error, transferencia — en orden creciente de exigencia cognitiva.
+Referencia: Marco Pedagógico V2, Estrategia 3.
+Variables: {{student_name}}, {{concept}}, {{student_level}}.

@@ -1,0 +1,5 @@
+TODO: Prompt de diagnóstico inicial de conocimientos previos.
+Activa conocimiento previo del estudiante con preguntas breves y abiertas.
+Incluye en contexto el mapa de prerrequisitos del concepto objetivo.
+Referencia: Marco Pedagógico V2, Estrategia 1.
+Variables: {{student_name}}, {{module_name}}, {{prerequisites}}.

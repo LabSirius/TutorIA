@@ -1,0 +1,5 @@
+TODO: Prompt de explicación avanzada con precisión técnica.
+Conecta el concepto con otros del dominio y con aplicaciones complejas.
+Para estudiantes con dominio previo demostrado.
+Referencia: Marco Pedagógico V2, Estrategia 2.
+Variables: {{student_name}}, {{concept}}, {{related_concepts}}, {{module_name}}.
