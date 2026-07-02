@@ -24,7 +24,7 @@ Trabajamos con la siguiente estructura de ramas:
 git checkout dev
 
 # 2. Desde dev, crea tu rama de trabajo
-git checkout -b feature/chat-conversacional
+git checkout -b feature/rag-pipeline
 ```
 
 ### Cómo subir cambios
@@ -50,11 +50,19 @@ Usamos el formato: `tipo: descripción corta en minúsculas`
 
 **Ejemplos:**
 ```
-feat: agrega endpoint de chat con Claude
-fix: corrige error de autenticación en Open edX
-docs: actualiza README con instrucciones de instalación
-chore: configura GitHub Actions para CI
+feat: add chat endpoint with ollama integration
+fix: correct pgvector similarity search query
+docs: update README with azure deployment notes
+chore: configure github actions for ci
+test: add unit tests for prompt manager rules
+refactor: extract llm client into service layer
 ```
+
+### Convenciones de código
+
+- Todo el código (nombres de variables, funciones, clases, comentarios, docstrings, endpoints, columnas de base de datos) se escribe en **inglés**
+- Los textos que ve el estudiante (prompts pedagógicos, mensajes de UI, contenido de cursos) se escriben en **español**
+- Se sigue una arquitectura por capas: `routers` (HTTP) → `services` (lógica de negocio) → `models` (datos)
 
 ### Subir archivos de documentación
 
@@ -64,7 +72,7 @@ Si solo vas a subir archivos (PDFs, imágenes, documentos) sin tocar código:
 2. En la terminal:
 ```bash
 git add .
-git commit -m "docs: agrega nombre-del-archivo"
+git commit -m "docs: add nombre-del-archivo"
 git push
 ```
 
@@ -74,6 +82,8 @@ git push
 - Datos personales de estudiantes
 - Archivos temporales o de sistema (`.DS_Store`, `Thumbs.db`)
 - Carpetas `node_modules/` o `venv/`
+- Modelos de Ollama descargados (son binarios pesados)
+- Volúmenes de PostgreSQL o dumps de la base de datos
 
 ---
 
@@ -101,7 +111,7 @@ We work with the following branch structure:
 git checkout dev
 
 # 2. From dev, create your working branch
-git checkout -b feature/conversational-chat
+git checkout -b feature/rag-pipeline
 ```
 
 ### How to submit changes
@@ -109,16 +119,16 @@ git checkout -b feature/conversational-chat
 1. Create a branch from `dev` (never from `main`)
 2. Make your changes
 3. Commit with a clear message (see convention below)
-4. Push your branch and open a Pull Request to `dev`
+4. Push your branch and open a Pull Request against `dev`
 5. Wait for review before merging
 
 ### Commit convention
 
 We use the format: `type: short description in lowercase`
 
-| Type | When to use |
-|------|------------|
-| `feat` | New feature |
+| Type | When to use it |
+|------|---------------|
+| `feat` | New functionality |
 | `fix` | Bug fix |
 | `docs` | Documentation |
 | `chore` | Configuration or maintenance tasks |
@@ -127,15 +137,23 @@ We use the format: `type: short description in lowercase`
 
 **Examples:**
 ```
-feat: add chat endpoint with Claude
-fix: fix authentication error in Open edX
-docs: update README with installation instructions
-chore: configure GitHub Actions for CI
+feat: add chat endpoint with ollama integration
+fix: correct pgvector similarity search query
+docs: update README with azure deployment notes
+chore: configure github actions for ci
+test: add unit tests for prompt manager rules
+refactor: extract llm client into service layer
 ```
+
+### Code conventions
+
+- All code (variable names, functions, classes, comments, docstrings, endpoints, database columns) is written in **English**
+- Student-facing text (pedagogical prompts, UI messages, course content) is written in **Spanish**
+- We follow a layered architecture: `routers` (HTTP) → `services` (business logic) → `models` (data)
 
 ### Uploading documentation files
 
-If you only need to upload files (PDFs, images, documents) without touching code:
+If you're only uploading files (PDFs, images, documents) without touching code:
 
 1. Place the file in the correct folder (`docs/`, `data/`, etc.)
 2. In the terminal:
@@ -145,9 +163,11 @@ git commit -m "docs: add file-name"
 git push
 ```
 
-### What should NOT be uploaded to the repo
+### What should NOT be committed
 
 - `.env` files with credentials or API keys
 - Students' personal data
 - Temporary or system files (`.DS_Store`, `Thumbs.db`)
 - `node_modules/` or `venv/` folders
+- Downloaded Ollama models (heavy binaries)
+- PostgreSQL volumes or database dumps
