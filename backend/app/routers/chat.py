@@ -55,10 +55,17 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     }
     system_prompt = prompt_manager.get_prompt(prompt_type, student_context)
 
-    rag_context = rag_service.search_context(request.message, module_id=session.module_id)
-    if rag_context:
-        context_block = "\n\n---\nMaterial de referencia:\n" + "\n---\n".join(rag_context)
-        system_prompt += context_block
+    # Retrieve curricular context (RAG) only when the session is scoped to a
+    # module — semantic search is module-scoped by design.
+    if session.module_id is not None:
+        chunks = await rag_service.search_context(
+            request.message, module_id=session.module_id
+        )
+        if chunks:
+            context_block = "\n\n---\nMaterial de referencia:\n" + "\n---\n".join(
+                chunk.chunk_text for chunk in chunks
+            )
+            system_prompt += context_block
 
     history.append({"role": "user", "content": request.message, "timestamp": datetime.now(timezone.utc).isoformat()})
 

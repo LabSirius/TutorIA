@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,6 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.db.database import Base, engine
 from app.routers import analytics, chat, evaluations, sessions, students
+from app.services.embedding_client import EmbeddingModelUnavailableError
+from app.services.rag_service import embedding_client
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -17,6 +22,21 @@ async def lifespan(app: FastAPI):
     # or the vector extension anyway).
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Startup check: the RAG pipeline needs the embedding model pulled in Ollama.
+    try:
+        await embedding_client.verify_available()
+        logger.info("Embedding model '%s' is available.", settings.embedding_model)
+    except EmbeddingModelUnavailableError as exc:
+        if settings.require_embedding_model:
+            raise
+        logger.warning(
+            "RAG embedding model unavailable at startup: %s "
+            "Continuing because REQUIRE_EMBEDDING_MODEL is false; RAG requests "
+            "will fail until the model is pulled (ollama pull %s).",
+            exc, settings.embedding_model,
+        )
+
     yield
     await engine.dispose()
 
