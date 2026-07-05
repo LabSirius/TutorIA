@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# TutorIA — local datastores and artifacts (never commit)
+*.db
+chroma_data/
+backend/chroma_data/
+tutoria.db
+test_tutoria.db

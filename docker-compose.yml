@@ -1,0 +1,24 @@
+# TutorIA — local development stack
+# PostgreSQL with the pgvector extension is the single, unified datastore:
+# relational data, semantic vectors (RAG) and pedagogical prompts all live here.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: tutoria_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tutoria
+      POSTGRES_PASSWORD: tutoria
+      POSTGRES_DB: tutoria
+    ports:
+      - "5432:5432"
+    volumes:
+      - tutoria_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tutoria -d tutoria"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  tutoria_pgdata:
