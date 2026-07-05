@@ -10,6 +10,11 @@ from app.routers import analytics, chat, evaluations, sessions, students
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # TODO(tech-debt): remove this create_all bootstrap. Alembic migrations are
+    # the single source of truth for the schema going forward. This line
+    # predates the move to Alembic + PostgreSQL and must be deleted once app
+    # startup no longer relies on it (it cannot create the pgvector HNSW index
+    # or the vector extension anyway).
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield

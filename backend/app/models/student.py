@@ -1,7 +1,8 @@
 from datetime import datetime
 
 from pydantic import BaseModel
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, func, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -26,9 +27,24 @@ class Student(Base):
     interests: Mapped[dict | None] = mapped_column(JSON, default=None)
     preferences: Mapped[dict | None] = mapped_column(JSON, default=None)
 
+    # Gamification (RF-16, RF-24). student_badges is the source of truth for
+    # earned badges; badges_earned is a denormalized cache for fast reads.
+    xp_points: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    current_streak_days: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    badges_earned: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+
     sessions: Mapped[list["Session"]] = relationship(back_populates="student")
     progress: Mapped[list["StudentProgress"]] = relationship(back_populates="student")
     evaluations: Mapped[list["Evaluation"]] = relationship(back_populates="student")
+    student_badges: Mapped[list["StudentBadge"]] = relationship(
+        back_populates="student", cascade="all, delete-orphan"
+    )
 
 
 class StudentProgress(Base):
@@ -68,6 +84,9 @@ class StudentRead(BaseModel):
     global_level: str
     interests: dict | None
     preferences: dict | None
+    xp_points: int
+    current_streak_days: int
+    badges_earned: list
 
     model_config = {"from_attributes": True}
 

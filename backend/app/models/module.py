@@ -23,6 +23,9 @@ class Subject(Base):
     )
 
     modules: Mapped[list["Module"]] = relationship(back_populates="subject")
+    teacher_courses: Mapped[list["TeacherCourse"]] = relationship(
+        back_populates="subject"
+    )
 
 
 class Module(Base):

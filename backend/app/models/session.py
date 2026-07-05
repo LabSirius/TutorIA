@@ -38,6 +38,17 @@ class Session(Base):
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
+class MessageEntry(BaseModel):
+    """One turn in a session's conversation history (stored in message_history
+    JSON). `prompt_key` records which pedagogical strategy was active when the
+    assistant produced this message, enabling per-turn traceability (RF-18)."""
+
+    role: str
+    content: str
+    timestamp: str
+    prompt_key: str | None = None
+
+
 class SessionCreate(BaseModel):
     student_id: int
     module_id: int | None = None
@@ -50,7 +61,7 @@ class SessionRead(BaseModel):
     started_at: datetime
     ended_at: datetime | None
     status: str
-    message_history: list | None
+    message_history: list[MessageEntry] | None
     summary: str | None
 
     model_config = {"from_attributes": True}
