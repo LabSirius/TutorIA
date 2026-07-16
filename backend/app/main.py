@@ -6,7 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db.database import Base, engine
-from app.routers import analytics, chat, feedback, sessions, students
+from app.gateways.openedx_gateway.sync_service import sync_service
+from app.routers import admin, analytics, chat, feedback, sessions, students
 from app.services import prompt_manager
 from app.services.embedding_client import EmbeddingModelUnavailableError
 from app.services.rag_service import embedding_client
@@ -53,7 +54,35 @@ async def lifespan(app: FastAPI):
         type(request_router).__name__,
     )
 
+    # Open edX -> PostgreSQL sync scheduler (RF-22). Disabled by default so the
+    # app never depends on Open edX being reachable to start.
+    scheduler = None
+    if settings.openedx_sync_enabled:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(
+            sync_service.sync_all,
+            "interval",
+            hours=settings.openedx_sync_interval_hours,
+            id="openedx_sync",
+            replace_existing=True,
+        )
+        scheduler.start()
+        logger.info(
+            "Open edX sync scheduler ENABLED (every %d h).",
+            settings.openedx_sync_interval_hours,
+        )
+    else:
+        logger.info(
+            "Open edX sync scheduler DISABLED (set OPENEDX_SYNC_ENABLED=true to enable)."
+        )
+    app.state.scheduler = scheduler
+
     yield
+
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
     await engine.dispose()
 
 
@@ -77,6 +106,7 @@ app.include_router(sessions.router)
 app.include_router(students.router)
 app.include_router(feedback.router)
 app.include_router(analytics.router)
+app.include_router(admin.router)
 
 
 @app.get("/health")

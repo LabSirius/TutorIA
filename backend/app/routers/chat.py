@@ -76,7 +76,14 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             )
             system_prompt += context_block
 
-    history.append({"role": "user", "content": request.message, "timestamp": datetime.now(timezone.utc).isoformat()})
+    # prompt_key is null on student turns: the pedagogical strategy applies to
+    # the agent's reply, not to what the student wrote (RF-18 traceability).
+    history.append({
+        "role": "user",
+        "content": request.message,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "prompt_key": None,
+    })
 
     llm_messages = [
         {"role": msg["role"], "content": msg["content"]}
@@ -92,7 +99,14 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         llm_messages, system_prompt, temperature=settings.llm_temperature
     )
 
-    history.append({"role": "assistant", "content": reply, "timestamp": datetime.now(timezone.utc).isoformat()})
+    # Record which pedagogical strategy produced this reply, so the teacher
+    # panel can trace the agent's decisions turn by turn (RF-18).
+    history.append({
+        "role": "assistant",
+        "content": reply,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "prompt_key": prompt_type,
+    })
     session.message_history = history
 
     await db.commit()
@@ -104,6 +118,9 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         await gamification_service.award_xp(
             student.id, settings.gamification_xp_per_message, reason="chat_message"
         )
+        # Streak first, so a streak milestone can be picked up by the badge
+        # check in the same turn.
+        await gamification_service.update_streak(student.id)
         await gamification_service.check_and_award_badges(student.id)
     except Exception:
         logger.exception(

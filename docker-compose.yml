@@ -55,6 +55,27 @@ services:
     entrypoint: ["/bin/sh", "-c", "ollama pull nomic-embed-text"]
     restart: "no"
 
+  # Local mock of Open edX's MongoDB, for developing/testing the RF-22 gateway
+  # without a real Open edX instance. Commented out by default to keep the dev
+  # environment light. To use it: uncomment this service and the volume below,
+  # run `docker compose up -d openedx-mongo`, and set in backend/.env:
+  #   OPENEDX_MONGO_URL=mongodb://localhost:27017
+  #   OPENEDX_MONGO_DB=edxapp
+  # openedx-mongo:
+  #   image: mongo:6.0
+  #   container_name: tutoria_openedx_mongo
+  #   restart: unless-stopped
+  #   ports:
+  #     - "27017:27017"
+  #   volumes:
+  #     - tutoria_openedx_mongo_data:/data/db
+  #   healthcheck:
+  #     test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
 volumes:
   tutoria_pgdata:
   tutoria_ollama_data:
+  # tutoria_openedx_mongo_data:

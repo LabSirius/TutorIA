@@ -45,6 +45,18 @@ class Settings(BaseSettings):
     # Ollama; set True in production so a misconfigured RAG stack fails loudly.
     require_embedding_model: bool = False
 
+    # -- Open edX MongoDB gateway (RF-22) ------------------------------------
+    # Left unset in dev when Open edX is not reachable; sync is off by default
+    # so the app never depends on Open edX being up to start.
+    openedx_mongo_url: str | None = None
+    openedx_mongo_db: str | None = None
+    openedx_sync_enabled: bool = False
+    openedx_sync_interval_hours: int = 6
+
+    # Token for the manual admin sync trigger.
+    # TODO: replace with proper auth (Open edX JWT / IAM) in a later phase.
+    admin_token: str | None = None
+
     # Application
     app_env: str = "development"
     app_debug: bool = True

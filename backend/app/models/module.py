@@ -15,6 +15,11 @@ class Subject(Base):
     __tablename__ = "subjects"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Natural key from Open edX (course_id). Nullable because subjects can also
+    # be created locally; unique so the MongoDB gateway can upsert idempotently.
+    external_id: Mapped[str | None] = mapped_column(
+        String(255), unique=True, index=True, default=None
+    )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, default=None)
     curriculum_version: Mapped[str | None] = mapped_column(String(50), default=None)
@@ -26,6 +31,11 @@ class Subject(Base):
     teacher_courses: Mapped[list["TeacherCourse"]] = relationship(
         back_populates="subject"
     )
+    # Read-only convenience view of the many-to-many. Writes go through
+    # TeacherCourse (which carries the `role` column).
+    teachers: Mapped[list["Teacher"]] = relationship(
+        "Teacher", secondary="teacher_courses", viewonly=True
+    )
 
 
 class Module(Base):
@@ -34,6 +44,10 @@ class Module(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     subject_id: Mapped[int] = mapped_column(
         ForeignKey("subjects.id"), nullable=False
+    )
+    # Natural key from Open edX (module/block id); see Subject.external_id.
+    external_id: Mapped[str | None] = mapped_column(
+        String(255), unique=True, index=True, default=None
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     order: Mapped[int] = mapped_column(Integer, default=0)

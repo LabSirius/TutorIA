@@ -38,6 +38,11 @@ class Teacher(Base):
     courses: Mapped[list["TeacherCourse"]] = relationship(
         back_populates="teacher", cascade="all, delete-orphan"
     )
+    # Read-only convenience view of the many-to-many. Writes go through
+    # TeacherCourse (which carries the `role` column).
+    subjects: Mapped[list["Subject"]] = relationship(
+        "Subject", secondary="teacher_courses", viewonly=True
+    )
 
 
 class TeacherCourse(Base):

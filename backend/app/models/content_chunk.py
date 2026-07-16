@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from pydantic import BaseModel
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,6 +30,19 @@ class ContentChunk(Base):
     """
 
     __tablename__ = "content_chunks"
+    __table_args__ = (
+        # Declared here (not only in the migration) so the model stays the single
+        # source of truth: otherwise `alembic revision --autogenerate` sees an
+        # index it does not know about and emits a DROP for it, silently
+        # degrading every semantic search to a sequential scan.
+        Index(
+            "ix_content_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     module_id: Mapped[int] = mapped_column(
