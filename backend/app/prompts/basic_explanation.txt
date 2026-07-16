@@ -1,6 +1,0 @@
-TODO: Prompt de explicación básica adaptada al nivel del estudiante.
-Usa lenguaje sencillo, ejemplos concretos y analogías con el contexto
-rural de Risaralda (café, plátano, cooperativas, veredas).
-Evita notación técnica en primera instancia.
-Referencia: Marco Pedagógico V2, Estrategia 2.
-Variables: {{student_name}}, {{student_level}}, {{concept}}, {{module_name}}.

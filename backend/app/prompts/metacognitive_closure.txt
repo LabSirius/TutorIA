@@ -1,7 +1,0 @@
-TODO: Prompt de cierre metacognitivo de sesión.
-Preguntas de reflexión: ¿qué aprendiste hoy?, ¿qué te quedó claro?,
-¿qué te genera dudas?, ¿qué harías diferente la próxima vez?
-Actualiza el modelo del estudiante con esa información.
-Sugiere qué trabajar en la próxima sesión.
-Referencia: Marco Pedagógico V2, sección 6.1.3 paso 6-7.
-Variables: {{student_name}}, {{topics_covered}}, {{next_suggested_topic}}.

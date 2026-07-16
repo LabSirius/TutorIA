@@ -4,7 +4,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_chat_creates_session_and_returns_response(client, db):
+async def test_chat_creates_session_and_returns_response(client, db, seeded_prompts):
     from app.models.student import Student
 
     student = Student(name="Ana", email="ana@test.com")
@@ -38,7 +38,7 @@ async def test_chat_returns_404_for_missing_student(client):
 
 
 @pytest.mark.asyncio
-async def test_chat_continues_existing_session(client, db):
+async def test_chat_continues_existing_session(client, db, seeded_prompts):
     from app.models.session import Session
     from app.models.student import Student
 

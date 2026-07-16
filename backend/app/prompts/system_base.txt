@@ -1,4 +1,0 @@
-TODO: Prompt base del sistema — personalidad de TutorIA.
-Define: identidad como agente docente, tono empático, reglas éticas,
-límites del agente (no evalúa sumativamente, no certifica, deriva crisis).
-Referencia: Marco Pedagógico V2, sección 2.

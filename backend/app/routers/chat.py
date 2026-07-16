@@ -53,7 +53,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         "student_level": student.global_level,
         "module_name": "",
     }
-    system_prompt = prompt_manager.get_prompt(prompt_type, student_context)
+    system_prompt = await prompt_manager.get_prompt(prompt_type, student_context)
 
     # Retrieve curricular context (RAG) only when the session is scoped to a
     # module — semantic search is module-scoped by design.

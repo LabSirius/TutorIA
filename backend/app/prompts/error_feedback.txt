@@ -1,7 +1,0 @@
-TODO: Prompt de retroalimentación formativa de error.
-Cuando el estudiante comete un error: (1) identifica el tipo de error,
-(2) lo señala sin corregir de inmediato, (3) orienta hacia la autocorrección
-mediante una pregunta. Retroalimentación específica, orientada al proceso,
-accionable y oportuna (Hattie & Timperley, 2007).
-Referencia: Marco Pedagógico V2, Estrategia 4.
-Variables: {{student_name}}, {{student_answer}}, {{concept}}.

@@ -70,9 +70,28 @@ async def _prepare_database():
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_tables(_prepare_database):
+    from app.services import prompt_manager
+
     table_names = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
     async with test_engine.begin() as conn:
         await conn.execute(text(f"TRUNCATE {table_names} RESTART IDENTITY CASCADE"))
+    # The prompt cache is module-level global state; reset it so each test starts
+    # consistent with the freshly-truncated database.
+    prompt_manager.invalidate_cache()
+    yield
+
+
+@pytest_asyncio.fixture
+async def seeded_prompts():
+    """Seed the 10 pedagogical prompt templates so chat-style tests can resolve
+    prompt keys. Leaves the prompt cache cold so get_prompt warms from the DB."""
+    from app.db.seeds.prompt_templates import seed_prompt_templates
+    from app.services import prompt_manager
+
+    async with TestSession() as session:
+        async with session.begin():
+            await seed_prompt_templates(session)
+    prompt_manager.invalidate_cache()
     yield
 
 

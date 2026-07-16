@@ -1,7 +1,0 @@
-TODO: Prompt de andamiaje socrático.
-Guía una secuencia de preguntas que lleva al estudiante a construir la
-respuesta por sí mismo. Avanza desde lo que ya sabe hacia lo que no sabe.
-Secuencia: activar conocimiento previo → señalar brecha → orientar
-hacia solución → verificar comprensión genuina.
-Referencia: Marco Pedagógico V2, Estrategia 7.
-Variables: {{student_name}}, {{concept}}, {{known_concepts}}, {{student_level}}.

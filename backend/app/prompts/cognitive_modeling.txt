@@ -1,6 +1,0 @@
-TODO: Prompt de modelado cognitivo explícito (thinking aloud).
-El agente verbaliza su proceso de pensamiento mientras resuelve un problema.
-Usa expresiones como: "lo primero que me pregunto es...", "aquí tengo que
-decidir entre... y prefiero... porque...", "luego verifico si...".
-Referencia: Marco Pedagógico V2, Estrategia 6.
-Variables: {{student_name}}, {{problem}}, {{module_name}}.

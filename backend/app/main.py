@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.db.database import Base, engine
 from app.routers import analytics, chat, evaluations, sessions, students
+from app.services import prompt_manager
 from app.services.embedding_client import EmbeddingModelUnavailableError
 from app.services.rag_service import embedding_client
 
@@ -35,6 +36,14 @@ async def lifespan(app: FastAPI):
             "Continuing because REQUIRE_EMBEDDING_MODEL is false; RAG requests "
             "will fail until the model is pulled (ollama pull %s).",
             exc, settings.embedding_model,
+        )
+
+    # Warm the pedagogical prompt cache from the database (RF-21).
+    count = await prompt_manager.warm_cache()
+    if count == 0:
+        logger.warning(
+            "No active prompt templates found. Seed them with: "
+            "python -m app.db.seed prompts"
         )
 
     yield
