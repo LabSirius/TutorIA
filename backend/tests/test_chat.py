@@ -1,6 +1,13 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+def _mock_llm_provider(reply: str):
+    """A stand-in LLM provider whose generate() returns a fixed reply."""
+    provider = MagicMock()
+    provider.generate = AsyncMock(return_value=reply)
+    return provider
 
 
 @pytest.mark.asyncio
@@ -14,8 +21,10 @@ async def test_chat_creates_session_and_returns_response(client, db, seeded_prom
 
     mock_reply = "Hola Ana, bienvenida a TutorIA."
 
-    with patch("app.routers.chat.llm_service.send_message", new_callable=AsyncMock) as mock_llm:
-        mock_llm.return_value = mock_reply
+    with patch(
+        "app.routers.chat.llm_service.get_provider",
+        return_value=_mock_llm_provider(mock_reply),
+    ):
         response = await client.post("/api/chat", json={
             "student_id": student.id,
             "message": "Hola, quiero aprender Python",
@@ -58,8 +67,10 @@ async def test_chat_continues_existing_session(client, db, seeded_prompts):
     await db.commit()
     await db.refresh(session)
 
-    with patch("app.routers.chat.llm_service.send_message", new_callable=AsyncMock) as mock_llm:
-        mock_llm.return_value = "Las variables son como cajas."
+    with patch(
+        "app.routers.chat.llm_service.get_provider",
+        return_value=_mock_llm_provider("Las variables son como cajas."),
+    ):
         response = await client.post("/api/chat", json={
             "student_id": student.id,
             "message": "Qué es una variable?",

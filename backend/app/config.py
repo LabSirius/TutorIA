@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
     llm_max_tokens: int = 2048
 
+    # Claude API — inert placeholders for a future phase (RF-23). Adding Claude
+    # later is a config change, not a code change: set the key, flip the flag.
+    claude_api_key: str | None = None
+    claude_model: str = "claude-3-5-sonnet-20241022"
+    use_classifier: bool = False
+
     # Database — unified PostgreSQL with pgvector (relational data + vectors + prompts)
     database_url: str = "postgresql+asyncpg://tutoria:tutoria@localhost:5432/tutoria"
 

@@ -1,14 +1,18 @@
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.database import get_db
 from app.models.session import Session
 from app.models.student import Student
 from app.services import llm_service, prompt_manager, rag_service
+from app.services.router_service import request_router
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -74,7 +78,14 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         for msg in history
     ]
 
-    reply = await llm_service.send_message(llm_messages, system_prompt)
+    # Choose the LLM provider (always "ollama" today; RF-23 will route complex
+    # queries to Claude in a future phase) and generate the response.
+    provider_name = await request_router.choose_provider(request.message, student_context)
+    logger.info("Provider selected: %s", provider_name)
+    provider = llm_service.get_provider(provider_name)
+    reply = await provider.generate(
+        llm_messages, system_prompt, temperature=settings.llm_temperature
+    )
 
     history.append({"role": "assistant", "content": reply, "timestamp": datetime.now(timezone.utc).isoformat()})
     session.message_history = history

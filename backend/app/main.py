@@ -10,6 +10,7 @@ from app.routers import analytics, chat, evaluations, sessions, students
 from app.services import prompt_manager
 from app.services.embedding_client import EmbeddingModelUnavailableError
 from app.services.rag_service import embedding_client
+from app.services.router_service import request_router
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,12 @@ async def lifespan(app: FastAPI):
             "No active prompt templates found. Seed them with: "
             "python -m app.db.seed prompts"
         )
+
+    # LLM provider routing (RF-23): today always local Ollama.
+    logger.info(
+        "%s initialized (provider routing active; default: ollama).",
+        type(request_router).__name__,
+    )
 
     yield
     await engine.dispose()
