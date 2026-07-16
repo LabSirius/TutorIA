@@ -1,6 +1,8 @@
 # TutorIA — local development stack
 # PostgreSQL with the pgvector extension is the single, unified datastore:
 # relational data, semantic vectors (RAG) and pedagogical prompts all live here.
+# Ollama runs the local LLM + embedding model, mirroring the production Azure
+# setup (dev-prod parity, zero-install onboarding).
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -20,5 +22,39 @@ services:
       timeout: 5s
       retries: 10
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: tutoria_ollama
+    restart: unless-stopped
+    ports:
+      # Exposed to the host so a host-run backend (uvicorn) and debugging tools
+      # can reach it at http://localhost:11434.
+      - "11434:11434"
+    volumes:
+      - tutoria_ollama_data:/root/.ollama
+    healthcheck:
+      # The ollama image ships no curl/wget; `ollama list` calls GET /api/tags
+      # under the hood and exits non-zero unless the server responds 200.
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # One-shot init: waits for ollama to be healthy, pulls the embedding model
+  # into the shared volume, then exits. Ollama does not auto-pull models.
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: tutoria_ollama_init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      # Point the CLI at the server container so the pull lands in its volume.
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c", "ollama pull nomic-embed-text"]
+    restart: "no"
+
 volumes:
   tutoria_pgdata:
+  tutoria_ollama_data:

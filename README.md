@@ -72,16 +72,22 @@ tutoria/
 git clone https://github.com/LabSirius/TutorIA.git
 cd TutorIA
 
-# 2. Instalar Ollama y descargar un modelo
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull llama3.2
+# 2. Levantar la infraestructura (PostgreSQL + Ollama) con Docker.
+#    El servicio ollama-init descarga el modelo de embeddings
+#    (nomic-embed-text) en un volumen y luego termina.
+docker compose up -d postgres ollama ollama-init
 
-# 3. Copiar variables de entorno
-cp backend/.env.example backend/.env
-# Editar según sea necesario (por defecto apunta a Ollama local)
+# 3. Verificar que el modelo se descargó
+docker compose logs ollama-init          # debe terminar en "success"
+curl http://localhost:11434/api/tags     # debe listar "nomic-embed-text"
 
-# 4. Levantar el entorno con Docker
-docker-compose up --build
+# 4. Configurar y ejecutar el backend en el host
+cd backend
+cp .env.example .env
+# Al correr el backend en el host, usa OLLAMA_BASE_URL=http://localhost:11434
+pip install -r requirements.txt
+alembic upgrade head                      # aplica las migraciones
+uvicorn app.main:app --reload
 ```
 
 Documentación de la API una vez levantada: `http://localhost:8000/docs`
@@ -172,16 +178,22 @@ tutoria/
 git clone https://github.com/LabSirius/TutorIA.git
 cd TutorIA
 
-# 2. Install Ollama and pull a model
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull llama3.2
+# 2. Start the infrastructure (PostgreSQL + Ollama) with Docker.
+#    The ollama-init service downloads the embedding model
+#    (nomic-embed-text) into a volume and then exits.
+docker compose up -d postgres ollama ollama-init
 
-# 3. Copy environment variables
-cp backend/.env.example backend/.env
-# Edit as needed (defaults to local Ollama)
+# 3. Verify the model was downloaded
+docker compose logs ollama-init          # should end with "success"
+curl http://localhost:11434/api/tags     # should list "nomic-embed-text"
 
-# 4. Start the environment with Docker
-docker-compose up --build
+# 4. Configure and run the backend on the host
+cd backend
+cp .env.example .env
+# When running the backend on the host, use OLLAMA_BASE_URL=http://localhost:11434
+pip install -r requirements.txt
+alembic upgrade head                      # apply migrations
+uvicorn app.main:app --reload
 ```
 
 Once running, API docs are available at: `http://localhost:8000/docs`
