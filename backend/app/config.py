@@ -21,6 +21,16 @@ class Settings(BaseSettings):
     claude_model: str = "claude-3-5-sonnet-20241022"
     use_classifier: bool = False
 
+    # -- Gamification --------------------------------------------------------
+    # PROVISIONAL VALUES — pending finalization with Dra. Grajales per RF-24.
+    # These are placeholders to enable end-to-end system testing. Adjust before
+    # the pilot. They live here (and in badges.criteria_json) precisely so the
+    # numbers can change without touching gamification_service code.
+    gamification_xp_per_message: int = 5              # PROVISIONAL
+    gamification_xp_per_correct_answer: int = 15      # PROVISIONAL
+    gamification_xp_per_module_completed: int = 100   # PROVISIONAL
+    gamification_streak_hours_window: int = 36        # PROVISIONAL
+
     # Database — unified PostgreSQL with pgvector (relational data + vectors + prompts)
     database_url: str = "postgresql+asyncpg://tutoria:tutoria@localhost:5432/tutoria"
 

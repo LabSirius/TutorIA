@@ -12,6 +12,12 @@ from app.db.database import Base
 # ---------------------------------------------------------------------------
 
 class Evaluation(Base):
+    """This model is named `evaluations` for historical reasons. Semantically it
+    represents feedback events in TutorIA's continuous formative feedback system,
+    not summative assessments. See RF-15 in the requirements document. The table
+    name is intentionally kept to avoid a destructive migration; the HTTP surface
+    is exposed under /api/feedback (see routers/feedback.py)."""
+
     __tablename__ = "evaluations"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

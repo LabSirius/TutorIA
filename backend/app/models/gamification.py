@@ -23,10 +23,21 @@ from app.db.database import Base
 class Badge(Base):
     """A gamification reward the student can earn (RF-16, RF-24).
 
-    `criteria_json` holds a structured rule that gamification_service interprets
-    at award time (implemented in a later step). The mechanics are a proposal to
-    be refined with the pedagogical team, so the rules are kept intentionally
-    simple and data-driven rather than hard-coded.
+    `criteria_json` holds a structured, data-driven rule that
+    gamification_service.check_and_award_badges interprets at award time. Keeping
+    the rule in the database (not in Python) lets the pedagogical team tune the
+    mechanics without a code change. Schema:
+
+        {
+          "type": "xp_threshold" | "streak_days" | "modules_completed"
+                  | "first_time_action",
+          "threshold": <int>,          # for the *_threshold / *_days / *_completed types
+          "action_key": <str>          # for first_time_action:
+                                       #   "first_message" | "late_night_session"
+        }
+
+    The mechanics are PROVISIONAL (RF-24) and will be refined with the
+    pedagogical team; the rules are intentionally simple and editable.
     """
 
     __tablename__ = "badges"
@@ -101,3 +112,21 @@ class StudentBadgeRead(BaseModel):
     earned_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class XpAwardRequest(BaseModel):
+    student_id: int
+    amount: int
+    reason: str
+
+
+class XpAwardResponse(BaseModel):
+    student_id: int
+    xp_points: int
+
+
+class GamificationState(BaseModel):
+    student_id: int
+    xp_points: int
+    current_streak_days: int
+    badges_earned: list[str]

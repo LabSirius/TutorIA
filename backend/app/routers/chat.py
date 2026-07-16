@@ -9,7 +9,12 @@ from app.config import settings
 from app.db.database import get_db
 from app.models.session import Session
 from app.models.student import Student
-from app.services import llm_service, prompt_manager, rag_service
+from app.services import (
+    gamification_service,
+    llm_service,
+    prompt_manager,
+    rag_service,
+)
 from app.services.router_service import request_router
 
 logger = logging.getLogger(__name__)
@@ -92,6 +97,19 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
 
     await db.commit()
     await db.refresh(session)
+
+    # Gamification is best-effort and must never break the tutoring response:
+    # the student's education comes before their game state (RF-16, RF-24).
+    try:
+        await gamification_service.award_xp(
+            student.id, settings.gamification_xp_per_message, reason="chat_message"
+        )
+        await gamification_service.check_and_award_badges(student.id)
+    except Exception:
+        logger.exception(
+            "Gamification update failed for student %s; returning chat response anyway",
+            student.id,
+        )
 
     return ChatResponse(
         response=reply,

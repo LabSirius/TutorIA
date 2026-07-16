@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db.database import Base, engine
-from app.routers import analytics, chat, evaluations, sessions, students
+from app.routers import analytics, chat, feedback, sessions, students
 from app.services import prompt_manager
 from app.services.embedding_client import EmbeddingModelUnavailableError
 from app.services.rag_service import embedding_client
@@ -75,7 +75,7 @@ app.add_middleware(
 app.include_router(chat.router)
 app.include_router(sessions.router)
 app.include_router(students.router)
-app.include_router(evaluations.router)
+app.include_router(feedback.router)
 app.include_router(analytics.router)
 
 

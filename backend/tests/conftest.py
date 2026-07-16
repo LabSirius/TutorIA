@@ -96,6 +96,17 @@ async def seeded_prompts():
 
 
 @pytest_asyncio.fixture
+async def seeded_badges():
+    """Seed the gamification badges so award/badge tests have rules to evaluate."""
+    from app.db.seeds.badges import seed_badges
+
+    async with TestSession() as session:
+        async with session.begin():
+            await seed_badges(session)
+    yield
+
+
+@pytest_asyncio.fixture
 async def db():
     async with TestSession() as session:
         yield session
