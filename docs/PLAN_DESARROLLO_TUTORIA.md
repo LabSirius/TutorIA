@@ -3,9 +3,10 @@
 > Guía paso a paso para construir TutorIA.
 > Cada fase pendiente incluye el **prompt exacto** que debes darle a Claude Code en VS Code.
 >
-> **Actualizado tras el Refactor V2** (julio 2026). Las fases completadas describen
-> el sistema **tal como existe hoy**; las pendientes conservan el formato de prompt.
-> Referencias: [Requerimientos V2](TutorIA_Requerimientos_V2.md) · [Marco Pedagógico V2](MArco_V2_texto.md)
+> **Actualizado tras la migración a Verawood y la decisión del Escenario B** (septiembre 2026).
+> Las fases completadas describen el sistema **tal como existe hoy**; las pendientes
+> conservan el formato de prompt.
+> Referencias: [Requerimientos V2](TutorIA_Requerimientos.md) · [Marco Pedagógico V2](MArco_V2_texto.md)
 
 ---
 
@@ -16,7 +17,7 @@
 | **FASE 0** — Contexto | ✅ Completada |
 | **FASE 1** — Backend (API + BD + LLM) | ✅ Completada |
 | **FASE 2** — Refactor a Requerimientos V2 | ✅ Completada (8 commits) |
-| **FASE 3** — Integración con Open edX | 🔴 Prioridad inmediata (incluye la pasarela MongoDB) |
+| **FASE 3** — Integración con Open edX (Escenario B vía MCP, sobre Verawood) | 🟡 EN PROGRESO — migración a Verawood ✅; servidor MCP en curso |
 | **FASE 4** — Prompts pedagógicos | 🟡 Infraestructura lista; **falta la redacción pedagógica** |
 | **FASE 5** — RAG: contenido pedagógico | 🟡 Pipeline listo; **falta el contenido + CLI de ingesta** |
 | **FASE 6** — Panel docente + Analytics | 🟡 Endpoints listos; **falta la UI** |
@@ -25,11 +26,13 @@
 
 **Regla de oro:** cada fase produce algo funcional y testeado antes de pasar a la siguiente.
 
-**Camino crítico hoy:** FASE 3 (integración con Open edX) es la nueva prioridad
-por directriz del Dr. José Jaramillo → luego FASE 4 (prompts) y FASE 5 (contenido),
-que pueden ejecutarse en paralelo si la Dra. Grajales tiene disponibilidad para
-redactar los prompts mientras el equipo técnico avanza en Open edX. Sin los prompts
-reales, TutorIA es un tutor *arquitectónicamente*, pero no *pedagógicamente*.
+**Camino crítico hoy:** FASE 3 (integración con Open edX) sigue siendo la prioridad.
+La decisión de arquitectura ya está tomada (**Escenario B: TutorIA autónomo, expuesto
+vía MCP**) y el entorno ya está migrado a **Open edX Verawood**. El trabajo restante
+de la fase es construir el servidor MCP e integrarlo con el framework. Luego FASE 4
+(prompts) y FASE 5 (contenido), que pueden ejecutarse en paralelo si la Dra. Grajales
+tiene disponibilidad. Sin los prompts reales, TutorIA es un tutor *arquitectónicamente*,
+pero no *pedagógicamente*.
 
 ---
 
@@ -38,7 +41,7 @@ reales, TutorIA es un tutor *arquitectónicamente*, pero no *pedagógicamente*.
 ```
 FASE 0 → FASE 1 → FASE 2 → FASE 3 → FASE 4 → FASE 5 → FASE 6 → FASE 7 → FASE 8
 Contexto Backend  RefactorV2 OpenedX  Prompts  RAG     Panel    Evals    Deploy
-  ✅       ✅        ✅        🔴       🟡      🟡       🟡       ⬜       ⬜
+  ✅       ✅        ✅        🟡       🟡      🟡       🟡       ⬜       ⬜
 ```
 
 ---
@@ -46,7 +49,7 @@ Contexto Backend  RefactorV2 OpenedX  Prompts  RAG     Panel    Evals    Deploy
 ## FASE 0 — Dar contexto a Claude Code ✅
 
 Antes de pedir código, Claude Code debe leer: `README.md`, `CONTRIBUTING.md`,
-`docs/TutorIA_Requerimientos_V2.md`, `docs/MArco_V2_texto.md` y
+`docs/TutorIA_Requerimientos.md`, `docs/MArco_V2_texto.md` y
 `docs/tutoria_architecture.svg`.
 
 Contexto clave que debe confirmar:
@@ -54,7 +57,8 @@ Contexto clave que debe confirmar:
 - Agente tutor virtual con IA para Open edX (Open edX ya corre en un servidor propio).
 - Motor LLM: **Ollama local** (contenedorizado) con API compatible con OpenAI.
   Sin API key de pago hoy; Claude API se incorporará por clasificador (RF-23).
-- Backend Python/FastAPI. Frontend **dentro de Open edX** (plugin/XBlock), no una SPA aparte.
+- Backend Python/FastAPI. **TutorIA es un servicio autónomo** que se integra con
+  Open edX vía MCP (ver FASE 3), no una SPA aparte ni un XBlock con la lógica dentro.
 - **PostgreSQL + pgvector es la única base de datos** (datos + vectores + prompts).
 - Infraestructura final: servidor propio en Azure (IaaS).
 - Todo el **código en inglés**; solo contenido pedagógico y textos de estudiante en español.
@@ -91,14 +95,14 @@ backend/
 │   │   ├── student.py  session.py  evaluation.py  module.py  analytics.py
 │   │   └── content_chunk.py  prompt_template.py  gamification.py  teacher.py
 │   ├── schemas/rag.py
-│   ├── gateways/openedx_gateway/   # mongo_client · schemas · sync_service
+│   ├── gateways/openedx_gateway/   # mongo_client · mysql_client · course_keys · schemas · sync_service
 │   └── db/
 │       ├── database.py         # Engine async (asyncpg)
 │       ├── seed.py             # CLI: prompts | badges | all
 │       ├── seeds/              # prompt_templates.py · badges.py
 │       └── migrations/         # Alembic (3 migraciones)
 ├── requirements.txt  Dockerfile  pytest.ini  .env.example
-└── tests/                      # 69 tests
+└── tests/                      # 69 tests (11 de la pasarela pendientes de reescritura, ver FASE 3)
 ```
 
 **Decisiones técnicas vigentes:**
@@ -108,9 +112,9 @@ backend/
 - **PostgreSQL en todos los entornos** vía `asyncpg`. No hay SQLite.
 - **pgvector** es el vector store (no ChromaDB).
 - Los prompts viven en la **base de datos**, no en archivos `.txt`.
-- `requirements.txt`: fastapi, uvicorn, openai, sqlalchemy, **asyncpg**, **pgvector**,
-  alembic, **motor**, **apscheduler**, pydantic-settings, python-multipart, httpx,
-  pytest, pytest-asyncio.
+- `requirements.txt`: fastapi, uvicorn, openai, sqlalchemy, **asyncpg**, **aiomysql**,
+  **pgvector**, alembic, **motor**, **apscheduler**, pydantic-settings, python-multipart,
+  httpx, pytest, pytest-asyncio. (`mcp` se añadirá en la FASE 3.II.)
 
 ### Modelo de datos (14 tablas, columnas en inglés)
 
@@ -164,68 +168,130 @@ con los Requerimientos V2. Adelantó además el código del pipeline RAG.
 
 **Deuda técnica que dejó** (ver también el final del documento):
 autenticación por cabecera (`X-Teacher-Id`, `X-Admin-Token`) pendiente de JWT real;
-nombres de colecciones de Mongo por confirmar; números de gamificación PROVISIONALES.
+números de gamificación PROVISIONALES. (Los nombres de colecciones de Mongo, que
+eran "guesses", **ya se confirmaron en la FASE 3**.)
 
 ---
 
-## FASE 3 — Integración con Open edX 🔴
+## FASE 3 — Integración con Open edX (Escenario B vía MCP) 🟡
 
 Prioridad inmediata por directriz del Dr. José Jaramillo. Descubrir bloqueos
-técnicos temprano (schemas MongoDB reales, autenticación JWT, compatibilidad de
-plugin/XBlock) antes de invertir semanas en contenido pedagógico. Además habilita
-un demo tangible del sistema funcionando end-to-end, aunque sea con prompts
-placeholder.
+técnicos temprano y habilitar un demo tangible del sistema funcionando end-to-end,
+aunque sea con prompts placeholder.
 
-### Parte A — Frontend dentro de Open edX
+### Decisión de arquitectura: Escenario B — TutorIA autónomo, expuesto vía MCP
 
-```
-Crea la integración con Open edX en openedx/:
+Tras evaluar dos escenarios de integración con el **AI Extension Framework**
+(`openedx-ai-extensions`) de Open edX, el equipo (Dr. José, Ana, Sofía) decidió el
+**Escenario B**:
 
-Opción A (preferida): configurar openedx-ai-extensions
-- Crea openedx/README.md con instrucciones para:
-  1. Instalar el plugin en la instancia de Open edX
-  2. Configurarlo para que apunte a nuestro backend FastAPI
-  3. Crear perfiles de AI para cada tipo de interacción
-  4. Configurar scopes por curso
+- **Escenario A (descartado) — Adopción total:** TutorIA se reconstruye como
+  configuración interna del framework (workflow profiles en Django admin). Se pierde
+  la autonomía del backend, y la personalización profunda, la gamificación y la
+  trazabilidad para investigación tendrían que reconstruirse dentro del framework.
+- **Escenario B (elegido) — Adopción como puerta (vía MCP):** TutorIA **permanece
+  como servicio autónomo** y se expone mediante el **Model Context Protocol (MCP)**,
+  estándar abierto que el framework soporta oficialmente como cliente. Open edX solo
+  actúa como punto de acceso: recibe la interacción del estudiante y la delega en
+  TutorIA, que ejecuta toda la lógica pedagógica y devuelve la respuesta.
 
-Opción B (fallback): XBlock custom
-- Crea openedx/tutoria_xblock/ con un XBlock que:
-  1. Muestre un widget de chat dentro del curso
-  2. Envíe mensajes a POST /api/chat
-  3. Renderice respuestas con markdown
-  4. Tenga botón de audio (TTS placeholder)
-  5. Muestre el avatar de TutorIA
+**Por qué B:** preserva íntegros los tres valores centrales de TutorIA —
+personalización por estudiante (Nivel 2), estadísticas para el docente y gamificación —
+porque todos viven en el backend autónomo. Menor acoplamiento al ciclo de releases de
+Open edX, portabilidad a otros LMS (MCP es estándar), y un patrón de integración
+novedoso y publicable (posicionamiento comunitario). El MCP es solo el canal de
+comunicación; no interviene en la lógica pedagógica.
 
-Crea openedx/docker-compose.override.yml para conectar Open edX con el backend
-en desarrollo local.
+> Documentos de respaldo de esta decisión (en `docs/`):
+> `Reporte_Verawood_TutorIA.docx`, `Escenarios_Integracion_TutorIA.docx`,
+> `Plan_Escenario_B_TutorIA.docx`.
 
-Commit: "feat: integración con Open edX"
-```
+### Entorno: migrado de Teak a Verawood
 
-### Parte B — Pasarela MongoDB → PostgreSQL (RF-22)
+El framework `openedx-ai-extensions` solo existe a partir de **Verawood**. El entorno
+local se migró de Open edX Teak (Tutor 21) a **Open edX Verawood (Tutor 22)**.
 
-La pasarela **ya está construida** (`app/gateways/openedx_gateway/`), pero **nunca
-se ha ejecutado contra una instancia real**. Pendiente:
+**Hallazgo clave validado:** los esquemas de datos de MongoDB y MySQL son **idénticos**
+entre Teak y Verawood. La pasarela validada en Teak funciona sin cambios en Verawood.
 
-1. **Confirmar los nombres de colección** en `sync_service.py`
-   (`modulestore.active_versions`, `modulestore.structures`,
-   `student_courseenrollment`) contra la instancia real. Son suposiciones.
-   Ojo: en muchos despliegues las **matrículas viven en MySQL, no en Mongo** — si es
-   el caso, `sync_enrollments()` necesita otra fuente.
-2. Configurar `OPENEDX_MONGO_URL` / `OPENEDX_MONGO_DB` y `OPENEDX_SYNC_ENABLED=true`.
-3. Probar primero en seco:
-   `POST /api/admin/sync-openedx?dry_run=true` con la cabecera `X-Admin-Token`.
-4. Sustituir la autenticación por cabecera con **JWT real de Open edX**.
+### Sub-fase 3.I — Migración del entorno a Verawood ✅ COMPLETADA
 
-Para desarrollar sin Open edX hay un servicio `openedx-mongo` comentado en
-`docker-compose.yml` que se puede descomentar.
+- Teak eliminado por completo (contenedores, imágenes, volúmenes, configuración).
+- Tutor 22 (Verawood) instalado limpio en WSL2 (Ubuntu, Docker Desktop).
+- Los 11 servicios de Verawood corriendo; superusuario `admin` creado.
+- Curso de prueba re-importado con opaque key correcto
+  (`course-v1:UTP+V001+2026_07_V1`).
+- **Esquemas re-validados contra Verawood:**
+  - MongoDB: `modulestore.active_versions`, `modulestore.structures`,
+    `modulestore.definitions` (nombres idénticos a Teak).
+  - MySQL: `student_courseenrollment` con las mismas columnas; matrículas en MySQL,
+    no en MongoDB; formato opaque key `course-v1:ORG+COURSE+RUN`; `user_id` del admin
+    = 4 (Tutor crea 3 usuarios de sistema antes del primer usuario real).
+- Backend de TutorIA reconectado a la red `tutor_local_default`; resuelve `mongodb`
+  y `mysql` por nombre de servicio.
 
-### Preguntas críticas para el Dr. José antes de arrancar
+**Estado de la pasarela (`app/gateways/openedx_gateway/`) tras la validación:**
 
-- ¿Cuál es la URL de la instancia de Open edX del proyecto y las credenciales admin?
-- ¿Qué versión de Open edX corre (nombre en clave: Nutmeg, Olive, Palm, Quince)?
-- ¿Podemos instalar plugins o hay restricciones institucionales?
-- ¿Prefiere el plugin `openedx-ai-extensions` o un XBlock custom?
+- `mongo_client.py` — cliente async Mongo (Motor), degradación elegante.
+- `mysql_client.py` — **nuevo**, cliente async MySQL (aiomysql) para matrículas.
+- `course_keys.py` — **nuevo**, `parse_course_key()` para el formato opaque key.
+- `sync_service.py` — actualizado: `sync_enrollments` lee de MySQL con JOIN a
+  `auth_user`, filtra `is_active=1` y excluye usuarios de sistema; constantes de
+  colección validadas.
+
+### Sub-fase 3.II — Servidor MCP de TutorIA 🔴 EN PROGRESO
+
+Construir la capa que expone las capacidades de TutorIA como herramientas MCP.
+Decisiones ya tomadas para el mínimo viable:
+
+- **SDK oficial de MCP** (`pip install mcp`, `from mcp.server.fastmcp import FastMCP`),
+  no el paquete standalone `fastmcp`.
+- **Módulo dentro del backend** (`backend/app/mcp_server/`), mismo proceso que FastAPI,
+  llama directamente a los servicios internos (un solo servicio a desplegar en Azure).
+- **Transporte HTTP** (streamable-http), montado en `/mcp`, porque Open edX se conecta
+  por red.
+- **Un solo tool: `chat_with_tutor`**, que envuelve la lógica de chat (extraída a un
+  `chat_service.py` compartido con el endpoint REST, sin duplicar la pedagogía).
+- El tool recibe el `student_id` **interno** de TutorIA (el mapeo del `user_id` de
+  Open edX se difiere a un segundo paso con migración Alembic — TODO fase-3b).
+- Se prueba en aislamiento con **MCP Inspector** antes de integrarlo con Open edX.
+
+### Sub-fase 3.III — Instalación y configuración del framework en Verawood ⬜
+
+- Instalar `openedx-ai-extensions` en el entorno Verawood.
+- Configurar el **provider** Ollama en `AI_EXTENSIONS` (config de Tutor).
+- Registrar el servidor MCP de TutorIA como servidor MCP externo
+  (`AI_EXTENSIONS_MCP_CONFIGS`).
+- Definir un **profile** que delegue en el MCP de TutorIA y un **scope**
+  (UI slot + course_id) donde aparece el chat.
+
+### Sub-fase 3.IV — Integración y prueba end-to-end ⬜
+
+- El estudiante entra al curso, ve el widget de chat, envía un mensaje.
+- El framework delega en el MCP de TutorIA; el motor responde con la lógica del Marco V2.
+- Verificar que personalización, gamificación y trazabilidad operan de extremo a extremo,
+  registrando estado en la BD de TutorIA.
+- Documentar el flujo en `openedx/README.md`.
+
+### Mejoras derivadas del framework (nuevas)
+
+- **Streaming chat** (confirmado): adaptar `POST /api/chat` y el MCP a respuesta
+  token por token (SSE). Mejora la UX, en especial en conexiones rurales lentas.
+- **Educator assistant** (deseable, a validar con la Dra. Grajales): asistente
+  conversacional para el docente que interprete las analíticas. Es alcance nuevo,
+  no un requisito confirmado.
+
+> El contenido pedagógico (prompts, RAG) y el endurecimiento/deploy que originalmente
+> figuraban en el plan del Escenario B **convergen con las FASES 4/5 y 8 globales**;
+> no se duplican aquí.
+
+### Preguntas críticas con el Dr. José — RESUELTAS
+
+- ✅ **Versión de Open edX:** Verawood (Tutor 22).
+- ✅ **Plugin vs XBlock:** ninguno como contenedor de la lógica — TutorIA autónomo
+  integrado vía MCP consumido por `openedx-ai-extensions` (Escenario B).
+- 🔴 **Autenticación JWT Open edX ↔ TutorIA:** pendiente; se resolverá al integrar el
+  framework y endurecer para el piloto (sigue siendo deuda de máxima prioridad).
 
 ---
 
@@ -300,6 +366,11 @@ Los 10 prompts redactados y validados en la BD, y el agente comportándose como 
 
 > **Importante:** esto es recuperación, **no** entrenamiento. El LLM nunca se modifica.
 
+> **Nota FASE 3:** la colección `modulestore.definitions` de Open edX (contenido real
+> de cada bloque) es la fuente natural para ingestar contenido curricular directamente
+> del LMS. Está identificada en `sync_service.py` como `DEFINITIONS_COLLECTION`
+> (TODO fase-5), sin consumir todavía.
+
 ### Lo que falta ⬜
 
 1. **El contenido** de Programación I e Introducción a la Matemática, contextualizado
@@ -356,6 +427,12 @@ multilingüe es barato (solo reindexar, `Vector(768)` → ajustar dimensión si 
 Autorización: cabecera `X-Teacher-Id` validada contra `teacher_courses` (403 si la
 docente no tiene la asignatura). **Es un placeholder hasta tener JWT.**
 
+> **Nota Escenario B:** la **lógica** del panel (estos endpoints, métricas,
+> trazabilidad) vive en el backend de TutorIA y **no cambia** con MCP. Lo que queda
+> por definir es la **presentación** dentro de Open edX (¿MFE embebida en el Instructor
+> Dashboard de Verawood? ¿vista propia?). Esa decisión de UX se toma durante la
+> integración; no afecta la lógica de analytics.
+
 ### Lo que falta ⬜
 
 ```
@@ -372,7 +449,7 @@ Completa el panel docente:
    - edición de prompts pedagógicos (RF-19/21) escribiendo en
      prompt_template_history con autor y fecha
 
-3. UI del panel DENTRO de Open edX (no una SPA aparte):
+3. UI del panel (la presentación dentro de Open edX se define en la integración):
    - Resumen del curso (métricas)
    - Lista de estudiantes con indicadores de riesgo
    - Detalle de estudiante (timeline, evaluaciones, gamificación)
@@ -452,6 +529,10 @@ cd backend && python -m evals.eval_runner   # reporte con scores por categoría
 > **Bloqueado por la compra del servidor Azure.** Sus especificaciones (RAM, GPU)
 > determinan el tamaño máximo del modelo local y, por tanto, la calidad pedagógica.
 
+En el Escenario B, el despliegue incluye tanto el backend de TutorIA (con su servidor
+MCP montado en `/mcp`) como la instancia de Open edX Verawood con el framework
+configurado para consumir ese MCP.
+
 ### Prompt para Claude Code
 
 ```
@@ -461,6 +542,7 @@ Prepara el proyecto para deploy:
    - depends_on: postgres (service_healthy) y ollama (service_healthy)
    - OLLAMA_BASE_URL=http://ollama:11434 (DNS interno de docker)
    - Ejecuta alembic upgrade head al arrancar
+   - Expone el servidor MCP en /mcp (mismo proceso que la API REST)
    (postgres, ollama y ollama-init ya existen)
 
 2. Crea docker-compose.prod.yml con overrides para producción:
@@ -490,6 +572,8 @@ Commit: "chore: configuración de deploy y CI/CD"
 
 - Sustituir la autenticación por cabecera con **JWT de Open edX** (bloqueante:
   hay datos personales de estudiantes de por medio — Ley 1581 de 2012).
+- Habilitar autenticación en las bases de datos y confirmar el aislamiento de los
+  datos del estudiante (Habeas Data).
 - Medir **RNF-01** (< 5 s por respuesta) sobre el hardware real de Azure.
   Inferencia solo-CPU probablemente no lo cumpla bajo carga.
 - Validación pedagógica de los prompts por 2 docentes por asignatura (RNF-09).
@@ -504,7 +588,10 @@ Commit: "chore: configuración de deploy y CI/CD"
 | Modelos de BD y migraciones | Claude Code | 1 ✅ |
 | Servicio LLM + chat endpoint | Claude Code | 1 ✅ |
 | Refactor a V2 (pgvector, prompts en BD, gamificación, pasarela) | Claude Code | 2 ✅ |
-| Integración Open edX + validación de pasarela | Claude Code | 3 🔴 |
+| Migración a Verawood + validación de esquemas | Sofía + Claude Chat | 3 ✅ |
+| Actualización de la pasarela (mysql_client, course_keys) | Claude Code | 3 ✅ |
+| Servidor MCP de TutorIA | Claude Code | 3 🔴 |
+| Config del framework `openedx-ai-extensions` + integración e2e | Sofía + Claude Code | 3 ⬜ |
 | **Diseño de prompts pedagógicos** | **Claude Chat + Dra. Grajales** | **4 🟡** |
 | Carga de prompts a la BD | Claude Code (seed) | 4 |
 | **Contenido de asignaturas** | **Claude Chat → archivos** | **5 🟡** |
@@ -522,7 +609,12 @@ Commit: "chore: configuración de deploy y CI/CD"
 - [x] **FASE 1** — Backend funcional: `POST /api/chat` responde
 - [x] **FASE 2** — Refactor V2: PostgreSQL+pgvector, prompts en BD, gamificación,
       trazabilidad, pasarela Open edX (69 tests en verde)
-- [ ] **FASE 3** — TutorIA funciona dentro de Open edX; la pasarela sincroniza datos reales
+- [ ] **FASE 3** — TutorIA integrado en Open edX Verawood vía MCP; la pasarela
+      sincroniza datos reales
+  - [x] 3.I — Migración a Verawood + validación de esquemas (idénticos a Teak)
+  - [ ] 3.II — Servidor MCP de TutorIA (`chat_with_tutor`), probado con MCP Inspector
+  - [ ] 3.III — `openedx-ai-extensions` instalado y configurado (provider, MCP, profile, scope)
+  - [ ] 3.IV — Prueba end-to-end: estudiante ↔ framework ↔ MCP ↔ TutorIA
 - [ ] **FASE 4** — Los 10 prompts redactados y validados; el agente se comporta como tutor
 - [ ] **FASE 5** — Contenido ingestado; el agente cita material de los módulos
 - [ ] **FASE 6** — La docente ve estadísticas, transcripciones y edita prompts
@@ -533,16 +625,20 @@ Commit: "chore: configuración de deploy y CI/CD"
 
 ## Deuda técnica pendiente
 
-| Tema | Detalle |
-|---|---|
-| **Autenticación** | `X-Teacher-Id` / `X-Admin-Token` son placeholders. **Máxima prioridad** antes de datos reales. |
-| `create_all` en `main.py` | Marcado con TODO; Alembic es la fuente de verdad. Puede eliminarse. |
-| Colecciones de Open edX | Nombres supuestos; confirmar contra la instancia real (FASE 3). |
-| Gamificación | Números PROVISIONALES en `config.py` + `badges.criteria_json`, pendientes de RF-24. |
-| `night_owl` | Usa hora UTC; Colombia es UTC-5. Falta decidir la política de zona horaria. |
-| Matrícula estudiante↔asignatura | Se deduce de sesiones/progreso; debería venir de la pasarela. |
-| Alertas de riesgo | `GET /api/analytics/course/{id}/alerts` devuelve `[]`. |
-| `update_streak` / notificaciones | La racha se actualiza en cada chat; faltan las notificaciones proactivas. |
+| Tema | Detalle | Estado |
+|---|---|---|
+| **Autenticación** | `X-Teacher-Id` / `X-Admin-Token` son placeholders. **Máxima prioridad** antes de datos reales. Se resolverá con la integración del framework (JWT). | 🔴 Pendiente |
+| Colecciones de Open edX | Nombres validados contra Teak **y** Verawood (idénticos). Matrículas confirmadas en MySQL; opaque keys confirmados. | ✅ Resuelto |
+| `create_all` en `main.py` | Marcado con TODO; Alembic es la fuente de verdad. Puede eliminarse. | Pendiente |
+| Gamificación | Números PROVISIONALES en `config.py` + `badges.criteria_json`, pendientes de RF-24. | Pendiente |
+| `night_owl` | Usa hora UTC; Colombia es UTC-5. Falta decidir la política de zona horaria. | Pendiente |
+| `sync_modules` devuelve 0 | Reimplementar recorriendo `blocks[]` de `structures` (resolver `children`, filtrar por `block_type`). | 🔴 TODO fase-3b |
+| Reconciliación de `Student` | Hoy por `email`; debería ser por `external_user_id` (necesita migración Alembic + backfill de `auth_user.id`). Es también el mapeo `user_id` Open edX → `Student` que el MCP necesitará. | 🔴 TODO fase-3b |
+| Tests de la pasarela | 11 tests de `test_openedx_gateway.py` rotos tras el cambio a MySQL/opaque keys; reescribir contra el nuevo esquema. | Pendiente |
+| `.env` vs pytest en host | `.env` con hostnames Docker (`postgres`, `ollama`) rompe pytest en el host; falta un `.env.test` apuntando a `localhost`. | Pendiente |
+| `DEFINITIONS_COLLECTION` | `modulestore.definitions` identificada pero sin consumir; fuente de contenido para RAG. | TODO fase-5 |
+| Alertas de riesgo | `GET /api/analytics/course/{id}/alerts` devuelve `[]`. | Pendiente (FASE 6) |
+| `update_streak` / notificaciones | La racha se actualiza en cada chat; faltan las notificaciones proactivas. | Pendiente |
 
 ---
 

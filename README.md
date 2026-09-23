@@ -9,7 +9,9 @@
 
 ### ¿Qué es TutorIA?
 
-TutorIA es un agente conversacional inteligente diseñado para acompañar a estudiantes de educación superior en zonas rurales del departamento de Risaralda, Colombia. Se integra dentro de la plataforma **Open edX** como herramienta de tutoría personalizada, ofreciendo retroalimentación continua, adaptabilidad pedagógica y elementos de gamificación para incentivar el aprendizaje.
+TutorIA es un agente conversacional inteligente diseñado para acompañar a estudiantes de educación superior en zonas rurales del departamento de Risaralda, Colombia. Se integra con la plataforma **Open edX** como herramienta de tutoría personalizada, ofreciendo retroalimentación continua, adaptabilidad pedagógica y elementos de gamificación para incentivar el aprendizaje.
+
+TutorIA es un **servicio autónomo**: toda su lógica pedagógica (adaptación al estudiante, RAG, gamificación, trazabilidad) vive en su propio backend, y se integra con Open edX exponiéndose a través del **Model Context Protocol (MCP)**. Open edX actúa como punto de acceso del estudiante; la inteligencia pedagógica permanece en TutorIA.
 
 El comportamiento pedagógico de TutorIA se rige por el **Marco Pedagógico V2** elaborado por la Dra. Luz Elena Grajales López, que define las estrategias de enseñanza, las reglas de adaptabilidad y la estructura curricular que el agente debe seguir.
 
@@ -38,10 +40,16 @@ El comportamiento pedagógico de TutorIA se rige por el **Marco Pedagógico V2**
 | Motor LLM (desarrollo/piloto) | Ollama (Llama 3.2 / Mistral) con API compatible OpenAI |
 | Motor LLM (futuro) | Claude API (Anthropic) mediante clasificador Haiku |
 | Base de datos | PostgreSQL con extensión **pgvector** (unifica datos relacionales, vectores semánticos y prompts pedagógicos) |
-| Sincronización con Open edX | Pasarela MongoDB → PostgreSQL |
-| LMS | Open edX (integración vía plugin `openedx-ai-extensions` o XBlock custom) |
+| Sincronización con Open edX | Pasarela MongoDB + MySQL → PostgreSQL (cursos y módulos en MongoDB; matrículas en MySQL) |
+| Integración con Open edX | **TutorIA como servidor MCP** (Model Context Protocol), consumido por el plugin `openedx-ai-extensions` de Open edX **Verawood** |
 | Infraestructura | Docker · Microsoft Azure (servidor propio, IaaS) |
 | CI/CD | GitHub Actions |
+
+> **Nota sobre la integración (Escenario B):** TutorIA no vive *dentro* de Open edX como
+> XBlock ni como configuración del framework. Es un servicio autónomo que se expone vía
+> MCP; el plugin `openedx-ai-extensions` (disponible desde Open edX Verawood) lo consume
+> como herramienta externa. Esto preserva la autonomía del backend, la personalización por
+> estudiante, la gamificación y la trazabilidad, y aporta portabilidad a otros LMS.
 
 > **Nota sobre Azure:** Azure se utiliza como **infraestructura** (servidor propio donde vive TutorIA), no como proveedor de LLM. El modelo de lenguaje corre localmente dentro del servidor Azure mediante Ollama. No se utiliza Azure OpenAI Service.
 
@@ -55,10 +63,12 @@ tutoria/
 │   ├── app/
 │   │   ├── routers/    # Endpoints HTTP (chat, students, sessions, evaluations, analytics)
 │   │   ├── services/   # Lógica de negocio (LLM, RAG, prompt_manager, gamification)
+│   │   ├── mcp_server/ # Servidor MCP: expone TutorIA a Open edX vía Model Context Protocol
+│   │   ├── gateways/   # Pasarela Open edX (mongo_client, mysql_client, course_keys, sync_service)
 │   │   ├── models/     # Modelos SQLAlchemy + esquemas Pydantic
 │   │   └── db/         # Motor de base de datos y migraciones Alembic
 │   └── tests/
-├── openedx/            # Plugin / XBlock para integración con Open edX
+├── openedx/            # Configuración de openedx-ai-extensions (provider, MCP, profile, scope) + docs
 ├── infra/              # Docker, docker-compose, configuración Azure
 ├── data/               # Corpus pedagógico (texto plano por asignatura y módulo)
 ├── docs/               # Documentación técnica, requerimientos, marco pedagógico
@@ -91,6 +101,7 @@ uvicorn app.main:app --reload
 ```
 
 Documentación de la API una vez levantada: `http://localhost:8000/docs`
+Servidor MCP (cuando esté montado): `http://localhost:8000/mcp`
 
 ### Equipo
 
@@ -115,7 +126,9 @@ Este proyecto es de código abierto bajo la licencia [MIT](LICENSE).
 
 ### What is TutorIA?
 
-TutorIA is an intelligent conversational agent designed to support higher education students in rural areas of the Risaralda department, Colombia. It is integrated within the **Open edX** platform as a personalized tutoring tool, offering continuous feedback, pedagogical adaptability, and gamification elements to encourage learning.
+TutorIA is an intelligent conversational agent designed to support higher education students in rural areas of the Risaralda department, Colombia. It integrates with the **Open edX** platform as a personalized tutoring tool, offering continuous feedback, pedagogical adaptability, and gamification elements to encourage learning.
+
+TutorIA is an **autonomous service**: all of its pedagogical logic (student adaptation, RAG, gamification, traceability) lives in its own backend, and it integrates with Open edX by exposing itself through the **Model Context Protocol (MCP)**. Open edX acts as the student's entry point; the pedagogical intelligence stays inside TutorIA.
 
 TutorIA's pedagogical behavior is governed by the **Pedagogical Framework V2** developed by Dr. Luz Elena Grajales López, which defines the teaching strategies, adaptability rules, and curriculum structure that the agent must follow.
 
@@ -144,10 +157,16 @@ TutorIA's pedagogical behavior is governed by the **Pedagogical Framework V2** d
 | LLM engine (development/pilot) | Ollama (Llama 3.2 / Mistral) with OpenAI-compatible API |
 | LLM engine (future) | Claude API (Anthropic) routed via Haiku classifier |
 | Database | PostgreSQL with **pgvector** extension (unified store for relational data, semantic vectors and pedagogical prompts) |
-| Open edX sync | MongoDB → PostgreSQL gateway |
-| LMS | Open edX (integration via `openedx-ai-extensions` plugin or custom XBlock) |
+| Open edX sync | MongoDB + MySQL → PostgreSQL gateway (courses and modules in MongoDB; enrollments in MySQL) |
+| Open edX integration | **TutorIA as an MCP server** (Model Context Protocol), consumed by the `openedx-ai-extensions` plugin on Open edX **Verawood** |
 | Infrastructure | Docker · Microsoft Azure (own server, IaaS) |
 | CI/CD | GitHub Actions |
+
+> **Note on integration (Scenario B):** TutorIA does not live *inside* Open edX as an
+> XBlock or as framework configuration. It is an autonomous service exposed via MCP; the
+> `openedx-ai-extensions` plugin (available from Open edX Verawood onward) consumes it as
+> an external tool. This preserves backend autonomy, per-student personalization,
+> gamification and traceability, and adds portability to other LMSs.
 
 > **Note about Azure:** Azure is used as **infrastructure** (own server hosting TutorIA), not as an LLM provider. The language model runs locally inside the Azure server via Ollama. Azure OpenAI Service is not used.
 
@@ -161,10 +180,12 @@ tutoria/
 │   ├── app/
 │   │   ├── routers/    # HTTP endpoints (chat, students, sessions, evaluations, analytics)
 │   │   ├── services/   # Business logic (LLM, RAG, prompt_manager, gamification)
+│   │   ├── mcp_server/ # MCP server: exposes TutorIA to Open edX via Model Context Protocol
+│   │   ├── gateways/   # Open edX gateway (mongo_client, mysql_client, course_keys, sync_service)
 │   │   ├── models/     # SQLAlchemy models + Pydantic schemas
 │   │   └── db/         # Database engine and Alembic migrations
 │   └── tests/
-├── openedx/            # Plugin / XBlock for Open edX integration
+├── openedx/            # openedx-ai-extensions configuration (provider, MCP, profile, scope) + docs
 ├── infra/              # Docker, docker-compose, Azure configuration
 ├── data/               # Pedagogical corpus (plain text by subject and module)
 ├── docs/               # Technical documentation, requirements, pedagogical framework
@@ -197,6 +218,7 @@ uvicorn app.main:app --reload
 ```
 
 Once running, API docs are available at: `http://localhost:8000/docs`
+MCP server (once mounted): `http://localhost:8000/mcp`
 
 ### Team
 
