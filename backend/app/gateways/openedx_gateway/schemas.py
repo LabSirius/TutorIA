@@ -36,3 +36,19 @@ class OpenEdxEnrollment(BaseModel):
     email: str
     name: str | None = None
     course_id: str | None = None
+
+
+class OpenEdxEnrollmentFromMySQL(BaseModel):
+    """An enrollment row read from Open edX's MySQL — the shape actually
+    validated against Tutor Teak (student_courseenrollment JOIN auth_user).
+    Reconciled into our `students` table by email (see sync_service). The old,
+    Mongo-shaped OpenEdxEnrollment above is kept for now.
+    """
+
+    enrollment_id: int      # student_courseenrollment.id (auto-increment PK)
+    user_id: int
+    course_id: str          # full opaque key: course-v1:ORG+COURSE+RUN
+    is_active: bool
+    mode: str               # e.g. "audit", "verified"
+    email: str              # via JOIN with auth_user
+    username: str | None = None

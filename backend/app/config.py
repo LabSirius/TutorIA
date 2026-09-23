@@ -53,6 +53,15 @@ class Settings(BaseSettings):
     openedx_sync_enabled: bool = False
     openedx_sync_interval_hours: int = 6
 
+    # -- Open edX MySQL gateway (RF-22) --------------------------------------
+    # Enrollments live in MySQL (student_courseenrollment), not MongoDB. Left
+    # unset in dev; enrollment sync degrades gracefully when not configured.
+    openedx_mysql_host: str | None = None
+    openedx_mysql_port: int = 3306
+    openedx_mysql_user: str | None = None
+    openedx_mysql_password: str | None = None
+    openedx_mysql_db: str | None = None
+
     # Token for the manual admin sync trigger.
     # TODO: replace with proper auth (Open edX JWT / IAM) in a later phase.
     admin_token: str | None = None

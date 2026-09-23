@@ -19,9 +19,11 @@ from app.gateways.openedx_gateway.mongo_client import (
     OpenEdxMongoClient,
     OpenEdxMongoUnavailableError,
 )
+from app.gateways.openedx_gateway.mysql_client import OpenEdxMySQLClient
 from app.gateways.openedx_gateway.schemas import (
     OpenEdxCourse,
     OpenEdxEnrollment,
+    OpenEdxEnrollmentFromMySQL,
     OpenEdxModule,
 )
 from app.models.module import Module, Subject
@@ -29,50 +31,56 @@ from app.models.student import Student
 
 logger = logging.getLogger(__name__)
 
-# TODO: confirm these collection names against the real Open edX instance before
-# the pilot. Open edX's split modulestore keeps course content in MongoDB; some
-# deployments keep enrollments in MySQL instead, in which case sync_enrollments
-# will need a different source.
+# Validated against Tutor 21.0.8 (Open edX Teak) with an imported test course:
+# - Courses and structures live in MongoDB (modulestore.*).
+# - Enrollments live in MySQL (student_courseenrollment), NOT MongoDB.
+# - modulestore.definitions holds per-block content (used by Fase 5 / RAG),
+#   not consumed here yet.
 COURSES_COLLECTION = "modulestore.active_versions"
 MODULES_COLLECTION = "modulestore.structures"
-ENROLLMENTS_COLLECTION = "student_courseenrollment"
+DEFINITIONS_COLLECTION = "modulestore.definitions"  # TODO(fase-5): consume for RAG ingestion
 
 
 class OpenEdxSyncService:
-    def __init__(self, client: OpenEdxMongoClient | None = None):
+    def __init__(
+        self,
+        client: OpenEdxMongoClient | None = None,
+        mysql_client: OpenEdxMySQLClient | None = None,
+    ):
         self.client = client or OpenEdxMongoClient()
+        self.mysql_client = mysql_client or OpenEdxMySQLClient()
 
     # -- parsing (defensive: skip documents we cannot identify) --------------
 
     @staticmethod
     def _parse_course(doc: dict) -> OpenEdxCourse | None:
-        course_id = str(doc.get("course_id") or doc.get("_id") or "").strip()
-        if not course_id:
-            logger.warning("Skipping course document without a course_id: %r", doc)
+        # active_versions documents carry org/course/run separately, not a
+        # combined course_id; reconstruct the opaque key from them.
+        org = str(doc.get("org") or "").strip()
+        course = str(doc.get("course") or "").strip()
+        run = str(doc.get("run") or "").strip()
+        if not (org and course and run):
+            logger.warning(
+                "Skipping course document without org/course/run: %r", doc
+            )
             return None
+        course_id = f"course-v1:{org}+{course}+{run}"
         return OpenEdxCourse(
             course_id=course_id,
-            display_name=str(doc.get("display_name") or doc.get("name") or course_id),
-            description=doc.get("description"),
+            # TODO(fase-3b): enrich display_name from the structures document
+            # (blocks[block_type == "course"].fields.display_name); the opaque
+            # key is a placeholder until then.
+            display_name=course_id,
+            description=None,
         )
 
     @staticmethod
     def _parse_module(doc: dict) -> OpenEdxModule | None:
-        module_id = str(doc.get("module_id") or doc.get("_id") or "").strip()
-        course_id = str(doc.get("course_id") or "").strip()
-        if not module_id or not course_id:
-            logger.warning(
-                "Skipping module document without module_id/course_id: %r", doc
-            )
-            return None
-        return OpenEdxModule(
-            module_id=module_id,
-            course_id=course_id,
-            display_name=str(doc.get("display_name") or doc.get("name") or module_id),
-            order=int(doc.get("order") or 0),
-            description=doc.get("description"),
-            content_text=doc.get("content_text"),
-        )
+        # A modulestore.structures document is a whole course tree (blocks[]),
+        # not one module per document, so a single-row parser cannot express the
+        # reshape. Returns None until module sync is reimplemented (see the
+        # TODO(fase-3b) above sync_modules).
+        return None
 
     @staticmethod
     def _parse_enrollment(doc: dict) -> OpenEdxEnrollment | None:
@@ -120,62 +128,44 @@ class OpenEdxSyncService:
         logger.info("Synced %d course(s) from Open edX", len(courses))
         return len(courses)
 
+    # TODO(fase-3b): reimplement module-level sync against the real structures
+    # schema. Each modulestore.structures document is a whole course tree: walk
+    # blocks[], resolve children recursively, and filter by block_type to emit
+    # one row per module. A single-row _parse_module cannot express this, so it
+    # returns None and this method returns 0 until the follow-up lands — the
+    # scheduler and admin endpoint keep working, they just get 0 modules.
     async def sync_modules(self, dry_run: bool = False) -> int:
-        docs = await self.client.fetch(MODULES_COLLECTION)
-        modules = [m for m in (self._parse_module(d) for d in docs) if m]
-        if dry_run:
-            logger.info("[dry-run] would upsert %d module(s) into modules", len(modules))
-            return len(modules)
+        logger.warning("module-level sync not yet reimplemented against real schema")
+        return 0
 
-        synced = 0
-        async with database.async_session() as session:
-            async with session.begin():
-                for module in modules:
-                    subject = (
-                        await session.execute(
-                            select(Subject).where(
-                                Subject.external_id == module.course_id
-                            )
-                        )
-                    ).scalar_one_or_none()
-                    if subject is None:
-                        logger.warning(
-                            "Skipping module %s: course %s has not been synced yet",
-                            module.module_id, module.course_id,
-                        )
-                        continue
-                    existing = (
-                        await session.execute(
-                            select(Module).where(
-                                Module.external_id == module.module_id
-                            )
-                        )
-                    ).scalar_one_or_none()
-                    if existing is None:
-                        session.add(
-                            Module(
-                                external_id=module.module_id,
-                                subject_id=subject.id,
-                                name=module.display_name,
-                                order=module.order,
-                                description=module.description,
-                                content_text=module.content_text,
-                            )
-                        )
-                    else:
-                        existing.subject_id = subject.id
-                        existing.name = module.display_name
-                        existing.order = module.order
-                        existing.description = module.description
-                        if module.content_text is not None:
-                            existing.content_text = module.content_text
-                    synced += 1
-        logger.info("Synced %d module(s) from Open edX", synced)
-        return synced
-
+    # TODO(fase-3b): reconcile Student by an external_user_id column instead of
+    # email. Requires an Alembic migration to add students.external_user_id (unique)
+    # and backfill from Open edX's auth_user.id. Deferred to keep Fase 3 changes
+    # schema-preserving.
     async def sync_enrollments(self, dry_run: bool = False) -> int:
-        docs = await self.client.fetch(ENROLLMENTS_COLLECTION)
-        enrollments = [e for e in (self._parse_enrollment(d) for d in docs) if e]
+        # The email filters exclude the system users Tutor creates before the
+        # first real user (admin is user_id=4): the automated *@openedx and
+        # *@fake.email accounts and the edx@example.com superuser.
+        query = (
+            "SELECT sce.id AS enrollment_id, sce.user_id, sce.course_id, "
+            "sce.is_active, sce.mode, au.email, au.username "
+            "FROM student_courseenrollment sce "
+            "JOIN auth_user au ON au.id = sce.user_id "
+            "WHERE sce.is_active = 1 "
+            "AND au.email NOT LIKE %s "
+            "AND au.email NOT LIKE %s "
+            "AND au.email != %s"
+        )
+        params = ("%@openedx", "%@fake.email", "edx@example.com")
+        rows = await self.mysql_client.fetch_all(query, params)
+
+        enrollments: list[OpenEdxEnrollmentFromMySQL] = []
+        for row in rows:
+            try:
+                enrollments.append(OpenEdxEnrollmentFromMySQL(**row))
+            except Exception as exc:  # noqa: BLE001 — skip a malformed row, keep the rest
+                logger.warning("Skipping malformed enrollment row %r: %s", row, exc)
+
         if dry_run:
             logger.info(
                 "[dry-run] would upsert %d enrollment(s) into students",
@@ -194,13 +184,15 @@ class OpenEdxSyncService:
                     if existing is None:
                         session.add(
                             Student(
-                                name=enrollment.name or enrollment.email,
+                                name=enrollment.username or enrollment.email,
                                 email=enrollment.email,
                             )
                         )
-                    elif enrollment.name:
-                        existing.name = enrollment.name
-        logger.info("Synced %d enrollment(s) from Open edX", len(enrollments))
+                    elif enrollment.username:
+                        existing.name = enrollment.username
+        logger.info(
+            "Synced %d enrollment(s) from Open edX MySQL", len(enrollments)
+        )
         return len(enrollments)
 
     async def sync_all(self, dry_run: bool = False) -> dict:
@@ -208,6 +200,9 @@ class OpenEdxSyncService:
         a failing step is reported in the result, not thrown at the caller."""
         results: dict = {"courses": 0, "modules": 0, "enrollments": 0, "errors": []}
 
+        # Only Mongo reachability is checked up-front (courses/modules come from
+        # Mongo). MySQL reachability is validated inside sync_enrollments itself,
+        # so a MySQL outage does not block course sync.
         try:
             await self.client.ping()
         except OpenEdxMongoUnavailableError as exc:
