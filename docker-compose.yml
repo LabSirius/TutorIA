@@ -55,6 +55,29 @@ services:
     entrypoint: ["/bin/sh", "-c", "ollama pull nomic-embed-text"]
     restart: "no"
 
+  # FastAPI backend. Joins two networks: its own stack (default / tutoria_default)
+  # for postgres + ollama, and the external tutor_local_default so it can reach
+  # Open edX's MongoDB (mongodb) and MySQL (mysql) for the RF-22 gateway.
+  backend:
+    build: ./backend
+    container_name: tutoria_backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    env_file:
+      - ./backend/.env
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+    networks:
+      - default
+      - tutor_local_default
+
   # Local mock of Open edX's MongoDB, for developing/testing the RF-22 gateway
   # without a real Open edX instance. Commented out by default to keep the dev
   # environment light. To use it: uncomment this service and the volume below,
@@ -79,3 +102,10 @@ volumes:
   tutoria_pgdata:
   tutoria_ollama_data:
   # tutoria_openedx_mongo_data:
+
+networks:
+  # Open edX's network (created by Tutor). Declared external so Compose attaches
+  # to it instead of trying to create/manage it. The `default` network is
+  # created automatically and is intentionally not declared here.
+  tutor_local_default:
+    external: true

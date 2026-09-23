@@ -1,0 +1,2 @@
+# Never commit local environment files (they contain credentials).
+.env
