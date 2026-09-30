@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.db.database import Base, engine
 from app.gateways.openedx_gateway.sync_service import sync_service
+from app.mcp_server.server import mcp
 from app.routers import admin, analytics, chat, feedback, sessions, students
 from app.services import prompt_manager
 from app.services.embedding_client import EmbeddingModelUnavailableError
@@ -79,7 +80,11 @@ async def lifespan(app: FastAPI):
         )
     app.state.scheduler = scheduler
 
-    yield
+    # MCP streamable-HTTP session manager (Fase 3.II). FastAPI does not run the
+    # lifespan of mounted sub-apps, so /mcp only works while this is running.
+    async with mcp.session_manager.run():
+        logger.info("MCP server mounted at /mcp (streamable HTTP).")
+        yield
 
     if scheduler is not None:
         scheduler.shutdown(wait=False)
@@ -107,6 +112,10 @@ app.include_router(students.router)
 app.include_router(feedback.router)
 app.include_router(analytics.router)
 app.include_router(admin.router)
+
+# MCP server (tool: chat_with_tutor). Creating the sub-app also creates the
+# session manager that the lifespan above runs.
+app.mount("/mcp", mcp.streamable_http_app())
 
 
 @app.get("/health")
