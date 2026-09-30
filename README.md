@@ -84,12 +84,13 @@ cd TutorIA
 
 # 2. Levantar la infraestructura (PostgreSQL + Ollama) con Docker.
 #    El servicio ollama-init descarga el modelo de embeddings
-#    (nomic-embed-text) en un volumen y luego termina.
+#    (nomic-embed-text) y el modelo de chat (llama3.2) en un volumen
+#    y luego termina.
 docker compose up -d postgres ollama ollama-init
 
-# 3. Verificar que el modelo se descargó
+# 3. Verificar que los modelos se descargaron
 docker compose logs ollama-init          # debe terminar en "success"
-curl http://localhost:11434/api/tags     # debe listar "nomic-embed-text"
+curl http://localhost:11434/api/tags     # debe listar "nomic-embed-text" y "llama3.2"
 
 # 4. Configurar y ejecutar el backend en el host
 cd backend
@@ -201,12 +202,13 @@ cd TutorIA
 
 # 2. Start the infrastructure (PostgreSQL + Ollama) with Docker.
 #    The ollama-init service downloads the embedding model
-#    (nomic-embed-text) into a volume and then exits.
+#    (nomic-embed-text) and the chat model (llama3.2) into a volume
+#    and then exits.
 docker compose up -d postgres ollama ollama-init
 
-# 3. Verify the model was downloaded
+# 3. Verify the models were downloaded
 docker compose logs ollama-init          # should end with "success"
-curl http://localhost:11434/api/tags     # should list "nomic-embed-text"
+curl http://localhost:11434/api/tags     # should list "nomic-embed-text" and "llama3.2"
 
 # 4. Configure and run the backend on the host
 cd backend
