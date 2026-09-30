@@ -8,7 +8,7 @@ from app.config import settings
 from app.db.database import Base, engine
 from app.gateways.openedx_gateway.sync_service import sync_service
 from app.mcp_server.server import mcp
-from app.routers import admin, analytics, chat, feedback, sessions, students
+from app.routers import admin, analytics, chat, feedback, openai_compat, sessions, students
 from app.services import prompt_manager
 from app.services.embedding_client import EmbeddingModelUnavailableError
 from app.services.rag_service import embedding_client
@@ -112,6 +112,8 @@ app.include_router(students.router)
 app.include_router(feedback.router)
 app.include_router(analytics.router)
 app.include_router(admin.router)
+# OpenAI-compatible provider for Open edX AI Extensions, at /v1/chat/completions.
+app.include_router(openai_compat.router)
 
 # MCP server (tool: chat_with_tutor). Creating the sub-app also creates the
 # session manager that the lifespan above runs.

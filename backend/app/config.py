@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     openedx_mysql_password: str | None = None
     openedx_mysql_db: str | None = None
 
+    # -- Open edX AI Extensions provider (OpenAI-compatible endpoint) --------
+    # Student that /v1/chat/completions speaks for when the request carries no
+    # usable `user` id. MVP only: every Open edX learner maps to this student.
+    # TODO(fase-3b): map Open edX user ids to TutorIA student ids.
+    openedx_default_student_id: int = 1
+
     # Token for the manual admin sync trigger.
     # TODO: replace with proper auth (Open edX JWT / IAM) in a later phase.
     admin_token: str | None = None
