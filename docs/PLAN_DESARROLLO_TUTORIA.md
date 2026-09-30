@@ -6,7 +6,7 @@
 > **Actualizado tras la migración a Verawood y la decisión del Escenario B** (septiembre 2026).
 > Las fases completadas describen el sistema **tal como existe hoy**; las pendientes
 > conservan el formato de prompt.
-> Referencias: [Requerimientos V2](TutorIA_Requerimientos.md) · [Marco Pedagógico V2](MArco_V2_texto.md)
+> Referencias: [Requerimientos V2](TutorIA_Requerimientos_V2.md) · [Marco Pedagógico V2](MArco_V2_texto.md)
 
 ---
 
@@ -17,7 +17,7 @@
 | **FASE 0** — Contexto | ✅ Completada |
 | **FASE 1** — Backend (API + BD + LLM) | ✅ Completada |
 | **FASE 2** — Refactor a Requerimientos V2 | ✅ Completada (8 commits) |
-| **FASE 3** — Integración con Open edX (Escenario B vía MCP, sobre Verawood) | 🟡 EN PROGRESO — migración a Verawood ✅; servidor MCP en curso |
+| **FASE 3** — Integración con Open edX (Escenario B vía MCP, sobre Verawood) | 🟡 EN PROGRESO — 3.I ✅ (Verawood), 3.II ✅ (servidor MCP funcionando); falta 3.III/3.IV (framework + e2e) |
 | **FASE 4** — Prompts pedagógicos | 🟡 Infraestructura lista; **falta la redacción pedagógica** |
 | **FASE 5** — RAG: contenido pedagógico | 🟡 Pipeline listo; **falta el contenido + CLI de ingesta** |
 | **FASE 6** — Panel docente + Analytics | 🟡 Endpoints listos; **falta la UI** |
@@ -28,8 +28,10 @@
 
 **Camino crítico hoy:** FASE 3 (integración con Open edX) sigue siendo la prioridad.
 La decisión de arquitectura ya está tomada (**Escenario B: TutorIA autónomo, expuesto
-vía MCP**) y el entorno ya está migrado a **Open edX Verawood**. El trabajo restante
-de la fase es construir el servidor MCP e integrarlo con el framework. Luego FASE 4
+vía MCP**) y el entorno ya está migrado a **Open edX Verawood**. El servidor MCP ya está
+construido y probado con respuesta real del modelo (3.II ✅); el trabajo restante de la
+fase es instalar y configurar el framework `openedx-ai-extensions` e integrarlo de
+extremo a extremo (3.III/3.IV). Luego FASE 4
 (prompts) y FASE 5 (contenido), que pueden ejecutarse en paralelo si la Dra. Grajales
 tiene disponibilidad. Sin los prompts reales, TutorIA es un tutor *arquitectónicamente*,
 pero no *pedagógicamente*.
@@ -49,7 +51,7 @@ Contexto Backend  RefactorV2 OpenedX  Prompts  RAG     Panel    Evals    Deploy
 ## FASE 0 — Dar contexto a Claude Code ✅
 
 Antes de pedir código, Claude Code debe leer: `README.md`, `CONTRIBUTING.md`,
-`docs/TutorIA_Requerimientos.md`, `docs/MArco_V2_texto.md` y
+`docs/TutorIA_Requerimientos_V2.md`, `docs/MArco_V2_texto.md` y
 `docs/tutoria_architecture.svg`.
 
 Contexto clave que debe confirmar:
@@ -83,6 +85,7 @@ backend/
 │   │   ├── analytics.py        # Panel docente + trazabilidad
 │   │   └── admin.py            # Disparador manual de sync Open edX
 │   ├── services/
+│   │   ├── chat_service.py     # process_chat_turn() — orquestación de un turno (REST + MCP)
 │   │   ├── llm_service.py      # OllamaProvider.generate() + get_provider()
 │   │   ├── router_service.py   # RequestRouter (placeholder RF-23)
 │   │   ├── rag_service.py      # Pipeline RAG con pgvector
@@ -101,8 +104,9 @@ backend/
 │       ├── seed.py             # CLI: prompts | badges | all
 │       ├── seeds/              # prompt_templates.py · badges.py
 │       └── migrations/         # Alembic (3 migraciones)
+├── mcp_server/                 # servidor MCP: server.py (FastMCP + tool chat_with_tutor)
 ├── requirements.txt  Dockerfile  pytest.ini  .env.example
-└── tests/                      # 69 tests (11 de la pasarela pendientes de reescritura, ver FASE 3)
+└── tests/                      # 59 tests en verde (11 de la pasarela fallan al importar tras el cambio a MySQL/opaque keys, ver deuda técnica)
 ```
 
 **Decisiones técnicas vigentes:**
@@ -114,7 +118,8 @@ backend/
 - Los prompts viven en la **base de datos**, no en archivos `.txt`.
 - `requirements.txt`: fastapi, uvicorn, openai, sqlalchemy, **asyncpg**, **aiomysql**,
   **pgvector**, alembic, **motor**, **apscheduler**, pydantic-settings, python-multipart,
-  httpx, pytest, pytest-asyncio. (`mcp` se añadirá en la FASE 3.II.)
+  httpx, pytest, pytest-asyncio, **mcp** (pin `>=1.20,<2`: la 2.x eliminó
+  `mcp.server.fastmcp`; `FastMCP` pasó a llamarse `MCPServer`).
 
 ### Modelo de datos (14 tablas, columnas en inglés)
 
@@ -239,22 +244,36 @@ entre Teak y Verawood. La pasarela validada en Teak funciona sin cambios en Vera
   `auth_user`, filtra `is_active=1` y excluye usuarios de sistema; constantes de
   colección validadas.
 
-### Sub-fase 3.II — Servidor MCP de TutorIA 🔴 EN PROGRESO
+### Sub-fase 3.II — Servidor MCP de TutorIA ✅ COMPLETADA
 
-Construir la capa que expone las capacidades de TutorIA como herramientas MCP.
-Decisiones ya tomadas para el mínimo viable:
+TutorIA queda expuesto como servidor MCP en el mismo proceso que FastAPI. **Estado real:**
 
-- **SDK oficial de MCP** (`pip install mcp`, `from mcp.server.fastmcp import FastMCP`),
-  no el paquete standalone `fastmcp`.
-- **Módulo dentro del backend** (`backend/app/mcp_server/`), mismo proceso que FastAPI,
-  llama directamente a los servicios internos (un solo servicio a desplegar en Azure).
-- **Transporte HTTP** (streamable-http), montado en `/mcp`, porque Open edX se conecta
-  por red.
-- **Un solo tool: `chat_with_tutor`**, que envuelve la lógica de chat (extraída a un
-  `chat_service.py` compartido con el endpoint REST, sin duplicar la pedagogía).
+- **SDK oficial de MCP** (`from mcp.server.fastmcp import FastMCP`), pin `mcp>=1.20,<2`.
+- La orquestación de un turno se extrajo a **`app/services/chat_service.py`**:
+  `process_chat_turn(db, student_id, message, session_id=None) -> ChatTurnResult`
+  (campos `response`, `session_id`, `prompt_type_used`). El endpoint REST y el tool MCP
+  llaman a la **misma** función; no hay pedagogía duplicada.
+- Errores como **excepciones de dominio** (`StudentNotFound`, `SessionNotFound`): el
+  router las traduce a `HTTPException(404)`, el tool MCP a un error legible.
+- **`app/mcp_server/server.py`**: `FastMCP("tutoria")` con un único tool
+  **`chat_with_tutor(student_id, message, session_id=None)`** que abre una sesión con el
+  mismo sessionmaker de `get_db`, llama a `process_chat_turn` y devuelve
+  `{assistant_message, session_id}`.
+- Montado en **`/mcp`** (streamable-http). El *session manager* del MCP se ejecuta
+  **combinado** con el `lifespan` existente de `main.py` (checks + scheduler), no lo
+  reemplaza.
 - El tool recibe el `student_id` **interno** de TutorIA (el mapeo del `user_id` de
-  Open edX se difiere a un segundo paso con migración Alembic — TODO fase-3b).
-- Se prueba en aislamiento con **MCP Inspector** antes de integrarlo con Open edX.
+  Open edX se difiere — TODO fase-3b).
+- Verificado en aislamiento con `scripts/mcp_smoke_test.py` (cliente de la librería `mcp`
+  contra `http://localhost:8000/mcp/`): conecta, lista el tool y devuelve respuesta real
+  de `llama3.2`.
+
+**Convención:** apuntar siempre a `/mcp/` **con barra final** (sin ella, un 307 podría
+degradar a `http://` detrás del proxy de Azure).
+
+> **Dato de rendimiento medido:** un turno real en CPU (modelo en frío + Open edX
+> corriendo) tardó **~19.5 min**. Confirma que el RNF-01 (< 5 s) exige **GPU en Azure**.
+> Pendiente medir un turno **en caliente y aislado** como línea base.
 
 ### Sub-fase 3.III — Instalación y configuración del framework en Verawood ⬜
 
@@ -590,7 +609,7 @@ Commit: "chore: configuración de deploy y CI/CD"
 | Refactor a V2 (pgvector, prompts en BD, gamificación, pasarela) | Claude Code | 2 ✅ |
 | Migración a Verawood + validación de esquemas | Sofía + Claude Chat | 3 ✅ |
 | Actualización de la pasarela (mysql_client, course_keys) | Claude Code | 3 ✅ |
-| Servidor MCP de TutorIA | Claude Code | 3 🔴 |
+| Servidor MCP de TutorIA (`chat_service` + `mcp_server`) | Claude Code | 3 ✅ |
 | Config del framework `openedx-ai-extensions` + integración e2e | Sofía + Claude Code | 3 ⬜ |
 | **Diseño de prompts pedagógicos** | **Claude Chat + Dra. Grajales** | **4 🟡** |
 | Carga de prompts a la BD | Claude Code (seed) | 4 |
@@ -608,11 +627,11 @@ Commit: "chore: configuración de deploy y CI/CD"
 - [x] **FASE 0** — Claude Code entiende el proyecto
 - [x] **FASE 1** — Backend funcional: `POST /api/chat` responde
 - [x] **FASE 2** — Refactor V2: PostgreSQL+pgvector, prompts en BD, gamificación,
-      trazabilidad, pasarela Open edX (69 tests en verde)
+      trazabilidad, pasarela Open edX (59 tests en verde)
 - [ ] **FASE 3** — TutorIA integrado en Open edX Verawood vía MCP; la pasarela
       sincroniza datos reales
   - [x] 3.I — Migración a Verawood + validación de esquemas (idénticos a Teak)
-  - [ ] 3.II — Servidor MCP de TutorIA (`chat_with_tutor`), probado con MCP Inspector
+  - [x] 3.II — Servidor MCP de TutorIA (`chat_with_tutor`), probado con cliente MCP (respuesta real de llama3.2)
   - [ ] 3.III — `openedx-ai-extensions` instalado y configurado (provider, MCP, profile, scope)
   - [ ] 3.IV — Prueba end-to-end: estudiante ↔ framework ↔ MCP ↔ TutorIA
 - [ ] **FASE 4** — Los 10 prompts redactados y validados; el agente se comporta como tutor
@@ -635,6 +654,12 @@ Commit: "chore: configuración de deploy y CI/CD"
 | `sync_modules` devuelve 0 | Reimplementar recorriendo `blocks[]` de `structures` (resolver `children`, filtrar por `block_type`). | 🔴 TODO fase-3b |
 | Reconciliación de `Student` | Hoy por `email`; debería ser por `external_user_id` (necesita migración Alembic + backfill de `auth_user.id`). Es también el mapeo `user_id` Open edX → `Student` que el MCP necesitará. | 🔴 TODO fase-3b |
 | Tests de la pasarela | 11 tests de `test_openedx_gateway.py` rotos tras el cambio a MySQL/opaque keys; reescribir contra el nuevo esquema. | Pendiente |
+| **Latencia en CPU** | Frío + Open edX corriendo: ~19.5 min. **En caliente y aislado: ~38-66 s (típico ~49 s)** para una respuesta de ~200 tokens. Sigue ~10× sobre el RNF-01 (< 5 s) y con alta variación → **GPU en Azure obligatoria** para el piloto. Mitigación de UX: streaming. | 🔴 Bloquea el piloto |
+| Hosts permitidos MCP | FastMCP solo acepta `localhost`/`127.0.0.1`. Hay que permitir el host de Open edX (`tutoria_backend`) para que el framework llame al `/mcp`. Va con el JWT en 3.III. | 🔴 TODO 3.III |
+| Ruta `/mcp` vs `/mcp/` | `/mcp` responde 307 a `/mcp/`; detrás del proxy de Azure podría degradar a `http://`. Convención: apuntar siempre a `/mcp/`. | Convención adoptada |
+| Resultado del tool MCP | `chat_with_tutor` devuelve texto plano (`-> dict`). Si `openedx-ai-extensions` quiere copia estructurada, cambiar a `-> dict[str, Any]`. | A validar en 3.III |
+| `message_history` mutable | Se persistía con `flag_modified` (fix 3.II). Solución durable: declarar la columna como JSON mutable rastreable. | Resuelto (mejora pendiente) |
+| `{prerequisites}` sin sustituir | El prompt de diagnóstico usa la variable `{prerequisites}`, pero `student_context` (chat.py) solo aporta `student_name`, `student_level`, `module_name`; la variable se filtra literal en la respuesta. Rellenarla o quitarla del template. | Pendiente (FASE 4) |
 | `.env` vs pytest en host | `.env` con hostnames Docker (`postgres`, `ollama`) rompe pytest en el host; falta un `.env.test` apuntando a `localhost`. | Pendiente |
 | `DEFINITIONS_COLLECTION` | `modulestore.definitions` identificada pero sin consumir; fuente de contenido para RAG. | TODO fase-5 |
 | Alertas de riesgo | `GET /api/analytics/course/{id}/alerts` devuelve `[]`. | Pendiente (FASE 6) |
