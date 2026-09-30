@@ -22,7 +22,7 @@ async def test_chat_creates_session_and_returns_response(client, db, seeded_prom
     mock_reply = "Hola Ana, bienvenida a TutorIA."
 
     with patch(
-        "app.routers.chat.llm_service.get_provider",
+        "app.services.chat_service.llm_service.get_provider",
         return_value=_mock_llm_provider(mock_reply),
     ):
         response = await client.post("/api/chat", json={
@@ -68,7 +68,7 @@ async def test_chat_continues_existing_session(client, db, seeded_prompts):
     await db.refresh(session)
 
     with patch(
-        "app.routers.chat.llm_service.get_provider",
+        "app.services.chat_service.llm_service.get_provider",
         return_value=_mock_llm_provider("Las variables son como cajas."),
     ):
         response = await client.post("/api/chat", json={
