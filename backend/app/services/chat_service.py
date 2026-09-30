@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.config import settings
 from app.models.session import Session
@@ -117,6 +118,9 @@ async def process_chat_turn(
         "prompt_key": prompt_type,
     })
     session.message_history = history
+    # history is the same list object loaded from the JSON column and was
+    # mutated in place, so SQLAlchemy cannot detect the change on its own.
+    flag_modified(session, "message_history")
 
     await db.commit()
     await db.refresh(session)
