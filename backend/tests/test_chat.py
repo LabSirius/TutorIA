@@ -81,3 +81,40 @@ async def test_chat_continues_existing_session(client, db, seeded_prompts):
     data = response.json()
     assert data["session_id"] == session.id
     assert data["prompt_type_used"] != "diagnostic"
+
+
+@pytest.mark.asyncio
+async def test_chat_persists_all_turns_on_continued_session(client, db, seeded_prompts):
+    from app.models.session import Session
+    from app.models.student import Student
+
+    student = Student(name="Lucia", email="lucia@test.com")
+    db.add(student)
+    await db.commit()
+    await db.refresh(student)
+
+    with patch(
+        "app.services.chat_service.llm_service.get_provider",
+        return_value=_mock_llm_provider("Respuesta del tutor."),
+    ):
+        first = await client.post("/api/chat", json={
+            "student_id": student.id,
+            "message": "Hola, quiero aprender Python",
+        })
+        session_id = first.json()["session_id"]
+        second = await client.post("/api/chat", json={
+            "student_id": student.id,
+            "message": "Qué es una variable?",
+            "session_id": session_id,
+        })
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["session_id"] == session_id
+
+    session = await db.get(Session, session_id)
+    await db.refresh(session)
+    assert len(session.message_history) == 4
+    assert [m["role"] for m in session.message_history] == [
+        "user", "assistant", "user", "assistant",
+    ]
