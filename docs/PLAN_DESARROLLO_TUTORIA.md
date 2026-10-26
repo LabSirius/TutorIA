@@ -275,19 +275,42 @@ degradar a `http://` detrás del proxy de Azure).
 > corriendo) tardó **~19.5 min**. Confirma que el RNF-01 (< 5 s) exige **GPU en Azure**.
 > Pendiente medir un turno **en caliente y aislado** como línea base.
 
-### Sub-fase 3.III — Instalación y configuración del framework en Verawood ⬜
+### Decisión de integración (aprobada por el Dr. José): Opción B — TutorIA como *provider* compatible con OpenAI
 
-- Instalar `openedx-ai-extensions` en el entorno Verawood.
-- Configurar el **provider** Ollama en `AI_EXTENSIONS` (config de Tutor).
-- Registrar el servidor MCP de TutorIA como servidor MCP externo
-  (`AI_EXTENSIONS_MCP_CONFIGS`).
-- Definir un **profile** que delegue en el MCP de TutorIA y un **scope**
+La revisión del código de `openedx-ai-extensions` demostró que su función de **MCP externo
+solo ejecuta MCP remoto del lado del proveedor** (en la práctica, OpenAI): el framework no
+tiene cliente MCP propio (`tool_executor.py` solo corre funciones locales; no hay nada que
+abra el `server_url`). Con Ollama local, el tool MCP **no se ejecuta**. Usar un orquestador
+de nube violaría el principio de datos locales (Ley 1581) y tendría costo.
+
+**Decisión (informe `Informe_Integracion_MCP_TutorIA.docx`):** TutorIA expone un endpoint
+**compatible con OpenAI** y se registra como el **provider** del framework. Open edX habla
+directo con TutorIA como si fuera el modelo. Todo local, sin costo. **El servidor MCP de 3.II
+no se descarta**: queda como interfaz estándar secundaria de TutorIA (otros clientes MCP, paper).
+
+Hallazgo de código que fija el contrato: el hilo *server-side* (`server_side_thread_id`) solo
+se activa para el provider llamado **"openai"**; con cualquier otro nombre de provider, el
+framework manda el historial completo por **Completion API** cada turno. → Registrar TutorIA
+con un provider **distinto de "openai"** para usar la vía Completion sin threading remoto.
+
+### Sub-fase 3.III — Endpoint provider de TutorIA + configuración del framework ⬜
+
+- **Claude Code:** exponer `POST /v1/chat/completions` (forma OpenAI) en TutorIA, que reusa
+  `process_chat_turn` (sin duplicar pedagogía). Toma el último mensaje del usuario y deja que
+  TutorIA gestione su propia sesión (preserva la adaptabilidad Nivel 2). Devuelve la respuesta
+  en forma OpenAI (`choices[0].message.content`). No streaming en el MVP.
+- **Sofía (Tutor):** instalar `openedx-ai-extensions`; registrar TutorIA como **provider**
+  compatible-OpenAI (nombre ≠ "openai", `API_BASE` al backend); crear **profile** y **scope**
   (UI slot + course_id) donde aparece el chat.
+- **Identidad del estudiante (MVP):** estudiante fijo por config + sesión persistente para el
+  demo. El mapeo real `user_id` de Open edX → `Student` se difiere a **fase-3b** (mismo pendiente
+  que en el MCP).
+- Permitir el host de Open edX en el backend y confirmar conectividad entre contenedores.
 
 ### Sub-fase 3.IV — Integración y prueba end-to-end ⬜
 
 - El estudiante entra al curso, ve el widget de chat, envía un mensaje.
-- El framework delega en el MCP de TutorIA; el motor responde con la lógica del Marco V2.
+- El framework llama a TutorIA como provider; TutorIA responde con la lógica del Marco V2.
 - Verificar que personalización, gamificación y trazabilidad operan de extremo a extremo,
   registrando estado en la BD de TutorIA.
 - Documentar el flujo en `openedx/README.md`.
@@ -632,8 +655,8 @@ Commit: "chore: configuración de deploy y CI/CD"
       sincroniza datos reales
   - [x] 3.I — Migración a Verawood + validación de esquemas (idénticos a Teak)
   - [x] 3.II — Servidor MCP de TutorIA (`chat_with_tutor`), probado con cliente MCP (respuesta real de llama3.2)
-  - [ ] 3.III — `openedx-ai-extensions` instalado y configurado (provider, MCP, profile, scope)
-  - [ ] 3.IV — Prueba end-to-end: estudiante ↔ framework ↔ MCP ↔ TutorIA
+  - [ ] 3.III — Endpoint `/v1/chat/completions` en TutorIA + framework configurado (TutorIA como provider, profile, scope) — **Opción B**
+  - [ ] 3.IV — Prueba end-to-end: estudiante ↔ framework ↔ TutorIA (provider)
 - [ ] **FASE 4** — Los 10 prompts redactados y validados; el agente se comporta como tutor
 - [ ] **FASE 5** — Contenido ingestado; el agente cita material de los módulos
 - [ ] **FASE 6** — La docente ve estadísticas, transcripciones y edita prompts
