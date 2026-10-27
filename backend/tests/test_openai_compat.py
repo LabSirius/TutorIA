@@ -130,10 +130,49 @@ async def test_chat_completions_non_integer_user_falls_back_to_default(
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_400_without_user_message(client):
+async def test_chat_completions_welcome_without_user_message(client, db):
+    from sqlalchemy import func, select
+
+    from app.models.session import Session
+    from app.models.student import Student
+    from app.routers.openai_compat import WELCOME_MESSAGE
+
+    await _create_student(db, "Ana", "ana@test.com")
+    provider = _mock_llm_provider("No debería usarse.")
+
+    with patch(LLM_PATCH, return_value=provider), patch(
+        "app.routers.openai_compat.process_chat_turn", new_callable=AsyncMock
+    ) as chat_turn:
+        response = await client.post("/v1/chat/completions", json={
+            "model": "tutoria",
+            "messages": [
+                {"role": "system", "content": "Eres un asistente."},
+                {"role": "system", "content": "Contexto del curso."},
+            ],
+        })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"].startswith("chatcmpl-")
+    assert data["object"] == "chat.completion"
+    assert data["model"] == "tutoria"
+    assert data["choices"] == [{
+        "index": 0,
+        "message": {"role": "assistant", "content": WELCOME_MESSAGE},
+        "finish_reason": "stop",
+    }]
+    assert WELCOME_MESSAGE == "¡Hola! Soy TutorIA. ¿En qué tema quieres que trabajemos hoy?"
+    chat_turn.assert_not_called()
+    provider.generate.assert_not_called()
+    assert await db.scalar(select(func.count()).select_from(Session)) == 0
+    assert await db.scalar(select(func.count()).select_from(Student)) == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_400_for_empty_user_message(client):
     response = await client.post("/v1/chat/completions", json={
         "model": "tutoria",
-        "messages": [{"role": "system", "content": "Eres un asistente."}],
+        "messages": [{"role": "user", "content": "   "}],
     })
     assert response.status_code == 400
 

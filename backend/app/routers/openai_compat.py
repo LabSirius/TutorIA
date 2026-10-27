@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
 
+# Returned when the framework calls with no user message (e.g. on chat open).
+WELCOME_MESSAGE = "¡Hola! Soy TutorIA. ¿En qué tema quieres que trabajemos hoy?"
+
 
 class ChatCompletionMessage(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -87,10 +90,32 @@ async def _latest_session_id(db: AsyncSession, student_id: int) -> int | None:
     )
 
 
+def _completion(model: str, content: str) -> dict[str, Any]:
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
 @router.post("/chat/completions")
 async def chat_completions(
     request: ChatCompletionRequest, db: AsyncSession = Depends(get_db)
 ):
+    # The framework may open the chat with only system messages. Answer with a
+    # static welcome without touching the LLM, the student or any session.
+    if not any(m.role == "user" for m in request.messages):
+        return _completion(request.model, WELCOME_MESSAGE)
+
     message = _last_user_message(request.messages)
     if message is None:
         raise HTTPException(status_code=400, detail="No user message in messages")
@@ -112,17 +137,4 @@ async def chat_completions(
         # Unreachable in practice: the session was just looked up for this student.
         raise HTTPException(status_code=404, detail="Session not found")
 
-    return {
-        "id": f"chatcmpl-{uuid.uuid4().hex}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": request.model,
-        "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": result.response},
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-    }
+    return _completion(request.model, result.response)
