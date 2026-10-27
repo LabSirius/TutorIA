@@ -327,3 +327,42 @@ async def test_chat_completions_stream_400_for_empty_user_message(client):
         "stream": True,
     })
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_sends_keepalive_until_content(
+    client, db, seeded_prompts
+):
+    import asyncio
+
+    await _create_student(db, "Ana", "ana@test.com")
+    reply = "Hola Ana, empecemos."
+
+    async def slow_generate(*args, **kwargs):
+        await asyncio.sleep(0.5)
+        return reply
+
+    provider = MagicMock()
+    provider.generate = AsyncMock(side_effect=slow_generate)
+
+    with patch(LLM_PATCH, return_value=provider), patch(
+        "app.routers.openai_compat.KEEPALIVE_INTERVAL_SECONDS", 0.05
+    ):
+        response = await client.post("/v1/chat/completions", json={
+            "model": "tutoria",
+            "messages": [{"role": "user", "content": "Hola"}],
+            "stream": True,
+        })
+
+    assert response.status_code == 200
+    blocks = [b for b in response.text.split("\n\n") if b]
+    keepalives = [i for i, b in enumerate(blocks) if b == ": keepalive"]
+    first_content = next(i for i, b in enumerate(blocks) if '"content"' in b)
+
+    assert '"role": "assistant"' in blocks[0]
+    assert len(keepalives) >= 2
+    # Keepalives only fill the wait between the role chunk and the reply.
+    assert all(0 < i < first_content for i in keepalives)
+    data_blocks = [b for b in blocks if b != ": keepalive"]
+    assert _streamed_content(_sse_events("\n\n".join(data_blocks) + "\n\n")) == reply
+    assert blocks[-1] == "data: [DONE]"

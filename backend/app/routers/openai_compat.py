@@ -6,6 +6,7 @@ same code /api/chat and the MCP tool use. TutorIA keeps its own session history,
 so only the last user message of the request is used; the history the framework
 sends is ignored.
 """
+import asyncio
 import json
 import logging
 import re
@@ -35,6 +36,9 @@ router = APIRouter(prefix="/v1", tags=["openai-compat"])
 
 # Returned when the framework calls with no user message (e.g. on chat open).
 WELCOME_MESSAGE = "¡Hola! Soy TutorIA. ¿En qué tema quieres que trabajemos hoy?"
+
+# Seconds between SSE keepalive comments while a streamed reply is generated.
+KEEPALIVE_INTERVAL_SECONDS = 15
 
 # Sent as the last content delta when a streamed reply fails after it started.
 STREAM_ERROR_MESSAGE = (
@@ -167,11 +171,23 @@ async def _stream_completion(
     if message is None:
         reply = WELCOME_MESSAGE
     else:
+        task = asyncio.create_task(_tutor_reply(db, request, message))
         try:
-            reply = await _tutor_reply(db, request, message)
+            # SSE comments keep proxies and clients from timing out the
+            # connection while the reply is generated (minutes on CPU).
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=KEEPALIVE_INTERVAL_SECONDS)
+                if done:
+                    break
+                yield ": keepalive\n\n"
+            reply = task.result()
         except Exception:
             logger.exception("Error generating a streamed chat completion")
             reply = STREAM_ERROR_MESSAGE
+        finally:
+            # The client disconnected mid-generation: stop the work it no longer waits for.
+            if not task.done():
+                task.cancel()
 
     for piece in _split_for_streaming(reply):
         yield _chunk(completion_id, created, model, {"content": piece})
