@@ -40,12 +40,29 @@ class ChatTurnResult:
     prompt_type_used: str
 
 
-async def process_chat_turn(
+@dataclass
+class PreparedChatTurn:
+    """Everything needed to generate a reply and then persist the turn."""
+
+    student: Student
+    session: Session
+    prompt_type: str
+    system_prompt: str
+    llm_messages: list[dict]
+    provider_name: str
+    user_entry: dict
+
+
+async def prepare_chat_turn(
     db: AsyncSession,
     student_id: int,
     message: str,
     session_id: int | None = None,
-) -> ChatTurnResult:
+) -> PreparedChatTurn:
+    """Validate student/session, pick the strategy and build the LLM input.
+
+    Nothing is persisted here except a new (flushed, uncommitted) session.
+    """
     student = await db.get(Student, student_id)
     if not student:
         raise StudentNotFound(student_id)
@@ -88,35 +105,64 @@ async def process_chat_turn(
 
     # prompt_key is null on student turns: the pedagogical strategy applies to
     # the agent's reply, not to what the student wrote (RF-18 traceability).
-    history.append({
+    user_entry = {
         "role": "user",
         "content": message,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "prompt_key": None,
-    })
+    }
 
+    # The full session history goes to the LLM, never truncated.
     llm_messages = [
         {"role": msg["role"], "content": msg["content"]}
-        for msg in history
+        for msg in [*history, user_entry]
     ]
 
     # Choose the LLM provider (always "ollama" today; RF-23 will route complex
-    # queries to Claude in a future phase) and generate the response.
+    # queries to Claude in a future phase).
     provider_name = await request_router.choose_provider(message, student_context)
     logger.info("Provider selected: %s", provider_name)
-    provider = llm_service.get_provider(provider_name)
-    reply = await provider.generate(
-        llm_messages, system_prompt, temperature=settings.llm_temperature
+
+    return PreparedChatTurn(
+        student=student,
+        session=session,
+        prompt_type=prompt_type,
+        system_prompt=system_prompt,
+        llm_messages=llm_messages,
+        provider_name=provider_name,
+        user_entry=user_entry,
     )
+
+
+async def finalize_chat_turn(
+    db: AsyncSession,
+    turn: PreparedChatTurn,
+    reply: str,
+    interrupted: bool = False,
+) -> ChatTurnResult:
+    """Persist the user message and the reply, then update gamification.
+
+    An interrupted turn (the client left mid-generation) keeps its partial reply,
+    marked with "interrupted": true, and earns no gamification.
+    """
+    student = turn.student
+    session = turn.session
+    prompt_type = turn.prompt_type
 
     # Record which pedagogical strategy produced this reply, so the teacher
     # panel can trace the agent's decisions turn by turn (RF-18).
-    history.append({
+    assistant_entry = {
         "role": "assistant",
         "content": reply,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "prompt_key": prompt_type,
-    })
+    }
+    if interrupted:
+        assistant_entry["interrupted"] = True
+
+    history = session.message_history or []
+    history.append(turn.user_entry)
+    history.append(assistant_entry)
     session.message_history = history
     # history is the same list object loaded from the JSON column and was
     # mutated in place, so SQLAlchemy cannot detect the change on its own.
@@ -127,22 +173,37 @@ async def process_chat_turn(
 
     # Gamification is best-effort and must never break the tutoring response:
     # the student's education comes before their game state (RF-16, RF-24).
-    try:
-        await gamification_service.award_xp(
-            student.id, settings.gamification_xp_per_message, reason="chat_message"
-        )
-        # Streak first, so a streak milestone can be picked up by the badge
-        # check in the same turn.
-        await gamification_service.update_streak(student.id)
-        await gamification_service.check_and_award_badges(student.id)
-    except Exception:
-        logger.exception(
-            "Gamification update failed for student %s; returning chat response anyway",
-            student.id,
-        )
+    if not interrupted:
+        try:
+            await gamification_service.award_xp(
+                student.id, settings.gamification_xp_per_message, reason="chat_message"
+            )
+            # Streak first, so a streak milestone can be picked up by the badge
+            # check in the same turn.
+            await gamification_service.update_streak(student.id)
+            await gamification_service.check_and_award_badges(student.id)
+        except Exception:
+            logger.exception(
+                "Gamification update failed for student %s; returning chat response anyway",
+                student.id,
+            )
 
     return ChatTurnResult(
         response=reply,
         session_id=session.id,
         prompt_type_used=prompt_type,
     )
+
+
+async def process_chat_turn(
+    db: AsyncSession,
+    student_id: int,
+    message: str,
+    session_id: int | None = None,
+) -> ChatTurnResult:
+    turn = await prepare_chat_turn(db, student_id, message, session_id)
+    provider = llm_service.get_provider(turn.provider_name)
+    reply = await provider.generate(
+        turn.llm_messages, turn.system_prompt, temperature=settings.llm_temperature
+    )
+    return await finalize_chat_turn(db, turn, reply)
