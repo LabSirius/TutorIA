@@ -86,3 +86,48 @@ def test_get_provider_unknown_raises():
 
     with pytest.raises(ValueError):
         get_provider("claude")  # not implemented yet
+
+
+class _FakeChunkStream:
+    """Stands in for the OpenAI AsyncStream returned by create(stream=True)."""
+
+    def __init__(self, contents: list[str]):
+        self._contents = contents
+        self.read = 0
+        self.close = AsyncMock()
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.read == len(self._contents):
+            raise StopAsyncIteration
+        chunk = MagicMock()
+        chunk.choices[0].delta.content = self._contents[self.read]
+        self.read += 1
+        return chunk
+
+
+async def test_stream_yields_content_deltas_and_closes():
+    provider = OllamaProvider()
+    fake = _FakeChunkStream(["Hola", "", " mundo"])
+    with patch.object(
+        provider._client.chat.completions, "create", new_callable=AsyncMock, return_value=fake
+    ):
+        deltas = [d async for d in provider.stream([], system_prompt="Eres TutorIA.")]
+    assert deltas == ["Hola", " mundo"]
+    fake.close.assert_awaited_once()
+
+
+async def test_stream_closed_early_closes_llm_response():
+    provider = OllamaProvider()
+    fake = _FakeChunkStream(["Hola", " mundo", " cruel"])
+    with patch.object(
+        provider._client.chat.completions, "create", new_callable=AsyncMock, return_value=fake
+    ):
+        stream = provider.stream([], system_prompt="Eres TutorIA.")
+        assert await anext(stream) == "Hola"
+        await stream.aclose()
+    # The HTTP response is closed, so Ollama stops generating the rest.
+    fake.close.assert_awaited_once()
+    assert fake.read == 1

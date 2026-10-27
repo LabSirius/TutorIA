@@ -92,10 +92,15 @@ class OllamaProvider:
             max_tokens=tokens,
             stream=True,
         )
-        async for chunk in stream:
-            delta = chunk.choices[0].delta
-            if delta.content:
-                yield delta.content
+        try:
+            async for chunk in stream:
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    yield delta.content
+        finally:
+            # Closing the HTTP response when the consumer stops early makes
+            # Ollama stop generating instead of finishing an unread reply.
+            await stream.close()
 
 
 # Provider registry. Instances are cached so the underlying HTTP clients are

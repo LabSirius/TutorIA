@@ -1,8 +1,10 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 LLM_PATCH = "app.services.chat_service.llm_service.get_provider"
+GAMIFICATION_PATCH = "app.services.chat_service.gamification_service"
 
 
 @pytest.fixture(autouse=True)
@@ -18,6 +20,27 @@ def _mock_llm_provider(reply: str):
     provider = MagicMock()
     provider.generate = AsyncMock(return_value=reply)
     return provider
+
+
+class _StreamingProvider:
+    """A stand-in LLM provider whose stream() yields fixed tokens and records how far it got."""
+
+    def __init__(self, tokens: list[str], first_delay: float = 0.0, delay: float = 0.0):
+        self.tokens = tokens
+        self.first_delay = first_delay
+        self.delay = delay
+        self.yielded = 0
+        self.closed = False
+        self.generate = AsyncMock()
+
+    async def stream(self, messages, system_prompt, **kwargs):
+        try:
+            for i, token in enumerate(self.tokens):
+                await asyncio.sleep(self.first_delay if i == 0 else self.delay)
+                self.yielded += 1
+                yield token
+        finally:
+            self.closed = True
 
 
 async def _create_student(db, name: str, email: str):
@@ -216,11 +239,15 @@ def _streamed_content(events: list) -> str:
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_stream_emits_openai_chunks(client, db, seeded_prompts):
+async def test_chat_completions_stream_forwards_each_token(client, db, seeded_prompts):
     student = await _create_student(db, "Ana", "ana@test.com")
-    reply = "Hola Ana. Una variable guarda un valor;\nveamos un ejemplo."
+    tokens = ["Hola", " Ana", ".", " Una variable", " guarda", " un valor;\n", "veamos."]
+    reply = "".join(tokens)
+    provider = _StreamingProvider(tokens)
 
-    with patch(LLM_PATCH, return_value=_mock_llm_provider(reply)):
+    with patch(LLM_PATCH, return_value=provider), patch(
+        GAMIFICATION_PATCH, new_callable=AsyncMock
+    ) as gamification:
         response = await client.post("/v1/chat/completions", json={
             "model": "tutoria",
             "messages": [{"role": "user", "content": "Qué es una variable?"}],
@@ -238,22 +265,33 @@ async def test_chat_completions_stream_emits_openai_chunks(client, db, seeded_pr
     ]
     assert chunks[-1]["choices"] == [{"index": 0, "delta": {}, "finish_reason": "stop"}]
     content_chunks = chunks[1:-1]
-    assert len(content_chunks) > 1
+    # Each LLM token is its own content chunk, in order.
+    assert [c["choices"][0]["delta"] for c in content_chunks] == [
+        {"content": t} for t in tokens
+    ]
     assert all(c["choices"][0]["finish_reason"] is None for c in content_chunks)
-    assert _streamed_content(events) == reply
 
     assert all(c["object"] == "chat.completion.chunk" for c in chunks)
     assert all(c["model"] == "tutoria" for c in chunks)
     assert len({c["id"] for c in chunks}) == 1
     assert chunks[0]["id"].startswith("chatcmpl-")
     assert len({c["created"] for c in chunks}) == 1
+    provider.generate.assert_not_called()
 
-    # Same pedagogy path as the non-streamed endpoint.
+    # Persisted once, after generation, with the full reply and its prompt_key.
     sessions = await _sessions_of(db, student.id)
     assert len(sessions) == 1
-    assert [m["content"] for m in sessions[0].message_history] == [
-        "Qué es una variable?", reply,
-    ]
+    user_entry, assistant_entry = sessions[0].message_history
+    assert user_entry["role"] == "user"
+    assert user_entry["content"] == "Qué es una variable?"
+    assert user_entry["prompt_key"] is None
+    assert assistant_entry["role"] == "assistant"
+    assert assistant_entry["content"] == reply
+    assert assistant_entry["prompt_key"]
+    assert "interrupted" not in assistant_entry
+    gamification.award_xp.assert_awaited_once()
+    gamification.update_streak.assert_awaited_once()
+    gamification.check_and_award_badges.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -268,7 +306,7 @@ async def test_chat_completions_stream_welcome_without_user_message(client, db):
 
     with patch(LLM_PATCH, return_value=provider), patch(
         "app.routers.openai_compat.process_chat_turn", new_callable=AsyncMock
-    ) as chat_turn:
+    ) as chat_turn, patch("app.routers.openai_compat.stream_chat_turn") as stream_turn:
         response = await client.post("/v1/chat/completions", json={
             "model": "tutoria",
             "messages": [{"role": "system", "content": "Eres un asistente."}],
@@ -282,6 +320,7 @@ async def test_chat_completions_stream_welcome_without_user_message(client, db):
     assert events[-2]["choices"][0]["finish_reason"] == "stop"
     assert events[-1] == "[DONE]"
     chat_turn.assert_not_called()
+    stream_turn.assert_not_called()
     provider.generate.assert_not_called()
     assert await db.scalar(select(func.count()).select_from(Session)) == 0
 
@@ -338,20 +377,15 @@ async def test_chat_completions_stream_400_for_empty_user_message(client):
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_stream_sends_keepalive_until_content(
+async def test_chat_completions_stream_keepalive_stops_after_first_token(
     client, db, seeded_prompts
 ):
-    import asyncio
-
     await _create_student(db, "Ana", "ana@test.com")
-    reply = "Hola Ana, empecemos."
-
-    async def slow_generate(*args, **kwargs):
-        await asyncio.sleep(0.5)
-        return reply
-
-    provider = MagicMock()
-    provider.generate = AsyncMock(side_effect=slow_generate)
+    tokens = ["Hola", " Ana,", " empecemos."]
+    reply = "".join(tokens)
+    # Slow first token (prompt processing), then gaps longer than the keepalive
+    # interval between tokens: keepalives must not reappear once content started.
+    provider = _StreamingProvider(tokens, first_delay=0.5, delay=0.2)
 
     with patch(LLM_PATCH, return_value=provider), patch(
         "app.routers.openai_compat.KEEPALIVE_INTERVAL_SECONDS", 0.05
@@ -369,8 +403,99 @@ async def test_chat_completions_stream_sends_keepalive_until_content(
 
     assert '"role": "assistant"' in blocks[0]
     assert len(keepalives) >= 2
-    # Keepalives only fill the wait between the role chunk and the reply.
+    # Keepalives only fill the wait between the role chunk and the first token.
     assert all(0 < i < first_content for i in keepalives)
+    assert ": keepalive" not in blocks[first_content:]
     data_blocks = [b for b in blocks if b != ": keepalive"]
     assert _streamed_content(_sse_events("\n\n".join(data_blocks) + "\n\n")) == reply
     assert blocks[-1] == "data: [DONE]"
+
+
+async def _assert_interrupted_turn(db, student_id: int, provider: _StreamingProvider):
+    # Generation stopped: the LLM stream was closed and produces nothing more.
+    assert provider.closed
+    produced = provider.yielded
+    assert produced < len(provider.tokens)
+    await asyncio.sleep(0.2)
+    assert provider.yielded == produced
+
+    sessions = await _sessions_of(db, student_id)
+    assert len(sessions) == 1
+    user_entry, assistant_entry = sessions[0].message_history
+    assert user_entry["content"] == "Hola"
+    assert "interrupted" not in user_entry
+    assert assistant_entry["role"] == "assistant"
+    assert assistant_entry["content"] == "".join(provider.tokens[:produced])
+    assert assistant_entry["prompt_key"]
+    assert assistant_entry["interrupted"] is True
+
+
+def _stream_request():
+    from app.routers.openai_compat import ChatCompletionRequest
+
+    return ChatCompletionRequest(
+        model="tutoria",
+        messages=[{"role": "user", "content": "Hola"}],
+        stream=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_disconnect_saves_partial_reply(
+    client, db, seeded_prompts
+):
+    """The client leaves after two tokens and the response generator is closed."""
+    from app.routers.openai_compat import _stream_completion
+
+    student = await _create_student(db, "Ana", "ana@test.com")
+    provider = _StreamingProvider(["Hola", " Ana,", " hoy", " vemos", " variables."], delay=0.05)
+
+    with patch(LLM_PATCH, return_value=provider), patch(
+        GAMIFICATION_PATCH, new_callable=AsyncMock
+    ) as gamification:
+        stream = _stream_completion(_stream_request(), "Hola")
+        received = []
+        async for event in stream:
+            if '"content"' in event:
+                received.append(event)
+            if len(received) == 2:
+                break
+        await stream.aclose()
+
+    await _assert_interrupted_turn(db, student.id, provider)
+    assert provider.yielded == 2
+    gamification.award_xp.assert_not_awaited()
+    gamification.update_streak.assert_not_awaited()
+    gamification.check_and_award_badges.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_cancellation_saves_partial_reply(
+    client, db, seeded_prompts
+):
+    """The client leaves while a token is being generated: Starlette cancels the
+    response task through an anyio cancel scope (level-triggered cancellation)."""
+    import anyio
+
+    from app.routers.openai_compat import _stream_completion
+
+    student = await _create_student(db, "Ana", "ana@test.com")
+    provider = _StreamingProvider(["Hola", " Ana,", " hoy", " vemos", " variables."], delay=0.5)
+    first_content = anyio.Event()
+
+    async def consume():
+        async for event in _stream_completion(_stream_request(), "Hola"):
+            if '"content"' in event:
+                first_content.set()
+
+    with patch(LLM_PATCH, return_value=provider), patch(
+        GAMIFICATION_PATCH, new_callable=AsyncMock
+    ) as gamification:
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(consume)
+            await first_content.wait()
+            task_group.cancel_scope.cancel()
+
+    await _assert_interrupted_turn(db, student.id, provider)
+    assert provider.yielded == 1
+    gamification.award_xp.assert_not_awaited()

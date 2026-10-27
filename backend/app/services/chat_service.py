@@ -4,10 +4,13 @@ This is the single place where a tutoring turn is processed: prompt selection,
 RAG context, LLM generation, history persistence and gamification. Transports
 only translate their input/output and map the domain exceptions below.
 """
+import asyncio
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import anyio
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -207,3 +210,35 @@ async def process_chat_turn(
         turn.llm_messages, turn.system_prompt, temperature=settings.llm_temperature
     )
     return await finalize_chat_turn(db, turn, reply)
+
+
+async def stream_chat_turn(
+    db: AsyncSession,
+    student_id: int,
+    message: str,
+    session_id: int | None = None,
+) -> AsyncIterator[str]:
+    """Same turn as process_chat_turn, yielding the reply as LLM text deltas.
+
+    The turn is persisted once, after generation, with the full reply. If the
+    consumer stops early (client disconnected), the LLM stream is closed and
+    the partial reply is persisted as interrupted.
+    """
+    turn = await prepare_chat_turn(db, student_id, message, session_id)
+    provider = llm_service.get_provider(turn.provider_name)
+    tokens = provider.stream(
+        turn.llm_messages, turn.system_prompt, temperature=settings.llm_temperature
+    )
+    parts: list[str] = []
+    try:
+        async for delta in tokens:
+            parts.append(delta)
+            yield delta
+    except (GeneratorExit, asyncio.CancelledError):
+        # Shielded: under anyio cancellation every await would be cancelled again.
+        with anyio.CancelScope(shield=True):
+            await tokens.aclose()
+            await finalize_chat_turn(db, turn, "".join(parts), interrupted=True)
+        raise
+
+    await finalize_chat_turn(db, turn, "".join(parts))

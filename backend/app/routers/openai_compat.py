@@ -1,8 +1,9 @@
 """OpenAI-compatible Chat Completions endpoint (Open edX AI Extensions, option B).
 
 Lets the Open edX AI Extensions framework use TutorIA as its LLM provider. It is
-only a transport: every turn is delegated to chat_service.process_chat_turn, the
-same code /api/chat and the MCP tool use. TutorIA keeps its own session history,
+only a transport: every turn is delegated to chat_service (process_chat_turn, the
+same code /api/chat and the MCP tool use, or stream_chat_turn for stream=true,
+which forwards LLM tokens as they are generated). TutorIA keeps its own session history,
 so only the last user message of the request is used; the history the framework
 sends is ignored.
 """
@@ -15,6 +16,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
@@ -22,12 +24,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.db import database
 from app.db.database import get_db
 from app.models.session import Session
 from app.services.chat_service import (
     SessionNotFound,
     StudentNotFound,
     process_chat_turn,
+    stream_chat_turn,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,11 +160,13 @@ async def _tutor_reply(db: AsyncSession, request: ChatCompletionRequest, message
     return result.response
 
 
+async def _next_token(tokens: AsyncIterator[str]) -> str | None:
+    return await anext(tokens, None)
+
+
 async def _stream_completion(
-    db: AsyncSession, request: ChatCompletionRequest, message: str | None
+    request: ChatCompletionRequest, message: str | None
 ) -> AsyncIterator[str]:
-    # Pseudo-streaming: the full reply is generated first, then emitted in pieces.
-    # TODO(fase-3b): stream tokens from the LLM as they are generated.
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     model = request.model
@@ -169,28 +175,46 @@ async def _stream_completion(
     yield _chunk(completion_id, created, model, {"role": "assistant"})
 
     if message is None:
-        reply = WELCOME_MESSAGE
+        for piece in _split_for_streaming(WELCOME_MESSAGE):
+            yield _chunk(completion_id, created, model, {"content": piece})
     else:
-        task = asyncio.create_task(_tutor_reply(db, request, message))
+        # The stream owns its db session: after a disconnect this generator may
+        # be closed late, when the request's own session is already gone.
+        db = database.async_session()
+        tokens = None
+        first_token = None
         try:
+            student_id = _resolve_student_id(request.user)
+            session_id = await _latest_session_id(db, student_id)
+            tokens = stream_chat_turn(db, student_id, message, session_id)
+
             # SSE comments keep proxies and clients from timing out the
-            # connection while the reply is generated (minutes on CPU).
+            # connection until the first token (prompt processing on CPU is slow).
+            first_token = asyncio.create_task(_next_token(tokens))
             while True:
-                done, _ = await asyncio.wait({task}, timeout=KEEPALIVE_INTERVAL_SECONDS)
+                done, _ = await asyncio.wait({first_token}, timeout=KEEPALIVE_INTERVAL_SECONDS)
                 if done:
                     break
                 yield ": keepalive\n\n"
-            reply = task.result()
+
+            token = first_token.result()
+            while token is not None:
+                yield _chunk(completion_id, created, model, {"content": token})
+                token = await anext(tokens, None)
         except Exception:
             logger.exception("Error generating a streamed chat completion")
-            reply = STREAM_ERROR_MESSAGE
+            yield _chunk(completion_id, created, model, {"content": STREAM_ERROR_MESSAGE})
         finally:
-            # The client disconnected mid-generation: stop the work it no longer waits for.
-            if not task.done():
-                task.cancel()
-
-    for piece in _split_for_streaming(reply):
-        yield _chunk(completion_id, created, model, {"content": piece})
+            # Also runs when the client disconnects. Closing the token stream
+            # stops Ollama and persists the partial reply as interrupted.
+            # Shielded: under anyio cancellation every await would be cancelled again.
+            with anyio.CancelScope(shield=True):
+                if first_token is not None and not first_token.done():
+                    first_token.cancel()
+                    await asyncio.wait({first_token})
+                if tokens is not None:
+                    await tokens.aclose()
+                await db.close()
 
     yield _chunk(completion_id, created, model, {}, finish_reason="stop")
 
@@ -223,10 +247,8 @@ async def chat_completions(
             raise HTTPException(status_code=400, detail="No user message in messages")
 
     if request.stream:
-        # The db session stays open while streaming: FastAPI (>=0.118) closes
-        # yield dependencies only after the response has been sent.
         return StreamingResponse(
-            _stream_completion(db, request, message),
+            _stream_completion(request, message),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
