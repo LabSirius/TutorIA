@@ -30,6 +30,10 @@ services:
       # Exposed to the host so a host-run backend (uvicorn) and debugging tools
       # can reach it at http://localhost:11434.
       - "11434:11434"
+    environment:
+      # Keep the model in memory between turns; the default (5m) unloads it
+      # during normal pauses and the next reply pays the reload.
+      OLLAMA_KEEP_ALIVE: 30m
     volumes:
       - tutoria_ollama_data:/root/.ollama
     healthcheck:
