@@ -120,10 +120,8 @@ async def test_chat_completions_non_integer_user_falls_back_to_default(
             "model": "tutoria",
             "messages": [{"role": "user", "content": "Hola"}],
             "user": "edx-username",
-            "stream": True,
         })
 
-    # stream=True is not supported yet: a full, non-streamed object comes back.
     assert response.status_code == 200
     assert response.json()["object"] == "chat.completion"
     assert len(await _sessions_of(db, student.id)) == 1
@@ -185,3 +183,147 @@ async def test_chat_completions_404_for_missing_student(client):
         "user": "999",
     })
     assert response.status_code == 404
+
+
+def _sse_events(body: str) -> list:
+    """Parse an SSE body into decoded JSON chunks, keeping the [DONE] sentinel as-is."""
+    import json
+
+    events = []
+    for block in body.split("\n\n"):
+        if not block:
+            continue
+        assert block.startswith("data: ")
+        payload = block[len("data: "):]
+        events.append(payload if payload == "[DONE]" else json.loads(payload))
+    return events
+
+
+def _streamed_content(events: list) -> str:
+    return "".join(
+        e["choices"][0]["delta"].get("content", "")
+        for e in events
+        if e != "[DONE]" and e["choices"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_emits_openai_chunks(client, db, seeded_prompts):
+    student = await _create_student(db, "Ana", "ana@test.com")
+    reply = "Hola Ana. Una variable guarda un valor;\nveamos un ejemplo."
+
+    with patch(LLM_PATCH, return_value=_mock_llm_provider(reply)):
+        response = await client.post("/v1/chat/completions", json={
+            "model": "tutoria",
+            "messages": [{"role": "user", "content": "Qué es una variable?"}],
+            "stream": True,
+        })
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = _sse_events(response.text)
+
+    assert events[-1] == "[DONE]"
+    chunks = events[:-1]
+    assert chunks[0]["choices"] == [
+        {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+    ]
+    assert chunks[-1]["choices"] == [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+    content_chunks = chunks[1:-1]
+    assert len(content_chunks) > 1
+    assert all(c["choices"][0]["finish_reason"] is None for c in content_chunks)
+    assert _streamed_content(events) == reply
+
+    assert all(c["object"] == "chat.completion.chunk" for c in chunks)
+    assert all(c["model"] == "tutoria" for c in chunks)
+    assert len({c["id"] for c in chunks}) == 1
+    assert chunks[0]["id"].startswith("chatcmpl-")
+    assert len({c["created"] for c in chunks}) == 1
+
+    # Same pedagogy path as the non-streamed endpoint.
+    sessions = await _sessions_of(db, student.id)
+    assert len(sessions) == 1
+    assert [m["content"] for m in sessions[0].message_history] == [
+        "Qué es una variable?", reply,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_welcome_without_user_message(client, db):
+    from sqlalchemy import func, select
+
+    from app.models.session import Session
+    from app.routers.openai_compat import WELCOME_MESSAGE
+
+    await _create_student(db, "Ana", "ana@test.com")
+    provider = _mock_llm_provider("No debería usarse.")
+
+    with patch(LLM_PATCH, return_value=provider), patch(
+        "app.routers.openai_compat.process_chat_turn", new_callable=AsyncMock
+    ) as chat_turn:
+        response = await client.post("/v1/chat/completions", json={
+            "model": "tutoria",
+            "messages": [{"role": "system", "content": "Eres un asistente."}],
+            "stream": True,
+        })
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    assert events[0]["choices"][0]["delta"] == {"role": "assistant"}
+    assert _streamed_content(events) == WELCOME_MESSAGE
+    assert events[-2]["choices"][0]["finish_reason"] == "stop"
+    assert events[-1] == "[DONE]"
+    chat_turn.assert_not_called()
+    provider.generate.assert_not_called()
+    assert await db.scalar(select(func.count()).select_from(Session)) == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_includes_usage_chunk_when_requested(client):
+    response = await client.post("/v1/chat/completions", json={
+        "model": "tutoria",
+        "messages": [{"role": "system", "content": "Eres un asistente."}],
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    })
+
+    events = _sse_events(response.text)
+    assert events[-3]["choices"][0]["finish_reason"] == "stop"
+    usage_chunk = events[-2]
+    assert usage_chunk["object"] == "chat.completion.chunk"
+    assert usage_chunk["id"] == events[0]["id"]
+    assert usage_chunk["choices"] == []
+    assert usage_chunk["usage"] == {
+        "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+    }
+    assert events[-1] == "[DONE]"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_reports_errors_in_stream(client):
+    from app.routers.openai_compat import STREAM_ERROR_MESSAGE
+
+    response = await client.post("/v1/chat/completions", json={
+        "model": "tutoria",
+        "messages": [{"role": "user", "content": "Hola"}],
+        "user": "999",
+        "stream": True,
+    })
+
+    # The stream has already started, so the error arrives as content, not as a 404.
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    assert events[0]["choices"][0]["delta"] == {"role": "assistant"}
+    assert _streamed_content(events) == STREAM_ERROR_MESSAGE
+    assert events[-2]["choices"][0]["finish_reason"] == "stop"
+    assert events[-1] == "[DONE]"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_400_for_empty_user_message(client):
+    response = await client.post("/v1/chat/completions", json={
+        "model": "tutoria",
+        "messages": [{"role": "user", "content": ""}],
+        "stream": True,
+    })
+    assert response.status_code == 400
