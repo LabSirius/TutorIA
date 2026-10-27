@@ -5,6 +5,14 @@ import pytest
 LLM_PATCH = "app.services.chat_service.llm_service.get_provider"
 
 
+@pytest.fixture(autouse=True)
+def _default_student_is_1(monkeypatch):
+    # Tests create the default student as id 1; ignore the developer's local .env.
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "openedx_default_student_id", 1)
+
+
 def _mock_llm_provider(reply: str):
     """A stand-in LLM provider whose generate() returns a fixed reply."""
     provider = MagicMock()
