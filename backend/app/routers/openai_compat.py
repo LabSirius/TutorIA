@@ -20,17 +20,16 @@ import anyio
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import database
 from app.db.database import get_db
-from app.models.session import Session
 from app.services.chat_service import (
     SessionNotFound,
     StudentNotFound,
     process_chat_turn,
+    resolve_active_session,
     stream_chat_turn,
 )
 
@@ -104,16 +103,6 @@ def _resolve_student_id(user: str | None) -> int:
     return settings.openedx_default_student_id
 
 
-async def _latest_session_id(db: AsyncSession, student_id: int) -> int | None:
-    """Most recent session of the student, or None so a new one is created."""
-    return await db.scalar(
-        select(Session.id)
-        .where(Session.student_id == student_id)
-        .order_by(Session.started_at.desc(), Session.id.desc())
-        .limit(1)
-    )
-
-
 def _completion(model: str, content: str) -> dict[str, Any]:
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
@@ -155,7 +144,7 @@ def _split_for_streaming(text: str) -> list[str]:
 
 async def _tutor_reply(db: AsyncSession, request: ChatCompletionRequest, message: str) -> str:
     student_id = _resolve_student_id(request.user)
-    session_id = await _latest_session_id(db, student_id)
+    session_id = await resolve_active_session(db, student_id)
     result = await process_chat_turn(db, student_id, message, session_id)
     return result.response
 
@@ -185,7 +174,7 @@ async def _stream_completion(
         first_token = None
         try:
             student_id = _resolve_student_id(request.user)
-            session_id = await _latest_session_id(db, student_id)
+            session_id = await resolve_active_session(db, student_id)
             tokens = stream_chat_turn(db, student_id, message, session_id)
 
             # SSE comments keep proxies and clients from timing out the

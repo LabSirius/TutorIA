@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     # TODO(fase-3b): map Open edX user ids to TutorIA student ids.
     openedx_default_student_id: int = 1
 
+    # -- Sessions --------------------------------------------------------------
+    # Transports that do not track sessions themselves (the Open edX provider
+    # endpoint) continue the student's latest session only if its last activity
+    # is this recent; otherwise it is closed and a new one starts.
+    session_inactivity_minutes: int = 60
+
     # Token for the manual admin sync trigger.
     # TODO: replace with proper auth (Open edX JWT / IAM) in a later phase.
     admin_token: str | None = None

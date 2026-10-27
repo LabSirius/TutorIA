@@ -8,9 +8,10 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import anyio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -41,6 +42,51 @@ class ChatTurnResult:
     response: str
     session_id: int
     prompt_type_used: str
+
+
+def _last_activity(session: Session) -> datetime:
+    """Timestamp of the session's last message, or its start if it has none."""
+    if session.message_history:
+        last = datetime.fromisoformat(session.message_history[-1]["timestamp"])
+        # Entries are written in UTC; tolerate naive timestamps all the same.
+        return last if last.tzinfo else last.replace(tzinfo=timezone.utc)
+    return session.started_at
+
+
+async def resolve_active_session(db: AsyncSession, student_id: int) -> int | None:
+    """Session to continue for a transport that does not track sessions itself.
+
+    Reuses the student's most recent active session while its last activity is
+    within SESSION_INACTIVITY_MINUTES. Otherwise that session is closed (status
+    "completed", ended_at at its last activity) and None is returned, so the
+    turn starts a new session. Transports that receive an explicit session_id
+    (/api/chat, the MCP tool) do not use this.
+    """
+    session = await db.scalar(
+        select(Session)
+        .where(Session.student_id == student_id, Session.status == "active")
+        .order_by(Session.started_at.desc(), Session.id.desc())
+        .limit(1)
+    )
+    if session is None:
+        return None
+
+    last_activity = _last_activity(session)
+    limit = timedelta(minutes=settings.session_inactivity_minutes)
+    if datetime.now(timezone.utc) - last_activity <= limit:
+        return session.id
+
+    session.status = "completed"
+    session.ended_at = last_activity
+    # Committed now: the session is over whatever happens to the new turn.
+    await db.commit()
+    logger.info(
+        "Closed session %s of student %s after inactivity (last activity %s)",
+        session.id,
+        student_id,
+        last_activity.isoformat(),
+    )
+    return None
 
 
 @dataclass

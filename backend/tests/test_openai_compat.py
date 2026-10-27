@@ -499,3 +499,124 @@ async def test_chat_completions_stream_cancellation_saves_partial_reply(
     await _assert_interrupted_turn(db, student.id, provider)
     assert provider.yielded == 1
     gamification.award_xp.assert_not_awaited()
+
+
+async def _create_session(db, student_id: int, last_activity_minutes_ago: float | None,
+                          started_minutes_ago: float = 300):
+    """A session whose last message (or start, if None) is that many minutes old."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.session import Session
+
+    now = datetime.now(timezone.utc)
+    history = []
+    if last_activity_minutes_ago is not None:
+        last = now - timedelta(minutes=last_activity_minutes_ago)
+        history = [
+            {"role": "user", "content": "Hola", "timestamp": (last - timedelta(minutes=1)).isoformat(),
+             "prompt_key": None},
+            {"role": "assistant", "content": "Hola, ¿qué quieres aprender?",
+             "timestamp": last.isoformat(), "prompt_key": "diagnostic"},
+        ]
+    session = Session(
+        student_id=student_id,
+        started_at=now - timedelta(minutes=started_minutes_ago),
+        message_history=history,
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_reuses_session_within_inactivity_limit(
+    client, db, seeded_prompts
+):
+    student = await _create_student(db, "Ana", "ana@test.com")
+    session = await _create_session(db, student.id, last_activity_minutes_ago=59)
+
+    with patch(LLM_PATCH, return_value=_StreamingProvider(["Seguimos."])):
+        response = await client.post("/v1/chat/completions", json={
+            "model": "tutoria",
+            "messages": [{"role": "user", "content": "Sigamos"}],
+            "stream": True,
+        })
+
+    assert response.status_code == 200
+    sessions = await _sessions_of(db, student.id)
+    assert [s.id for s in sessions] == [session.id]
+    assert sessions[0].status == "active"
+    assert sessions[0].ended_at is None
+    assert len(sessions[0].message_history) == 4
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_starts_new_session_after_inactivity(
+    client, db, seeded_prompts
+):
+    from datetime import datetime
+
+    student = await _create_student(db, "Ana", "ana@test.com")
+    stale = await _create_session(db, student.id, last_activity_minutes_ago=61)
+    last_activity = datetime.fromisoformat(stale.message_history[-1]["timestamp"])
+
+    with patch(LLM_PATCH, return_value=_StreamingProvider(["Hola", " de", " nuevo."])):
+        response = await client.post("/v1/chat/completions", json={
+            "model": "tutoria",
+            "messages": [{"role": "user", "content": "Hola otra vez"}],
+            "stream": True,
+        })
+
+    assert response.status_code == 200
+    sessions = {s.id: s for s in await _sessions_of(db, student.id)}
+    assert len(sessions) == 2
+    old = sessions[stale.id]
+    assert old.status == "completed"
+    assert old.ended_at == last_activity
+    assert len(old.message_history) == 2  # history untouched
+
+    (new,) = [s for s in sessions.values() if s.id != stale.id]
+    assert new.status == "active"
+    assert new.ended_at is None
+    assert [m["content"] for m in new.message_history] == ["Hola otra vez", "Hola de nuevo."]
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_closes_empty_stale_session_at_its_start(
+    client, db, seeded_prompts
+):
+    student = await _create_student(db, "Ana", "ana@test.com")
+    stale = await _create_session(
+        db, student.id, last_activity_minutes_ago=None, started_minutes_ago=120
+    )
+
+    with patch(LLM_PATCH, return_value=_StreamingProvider(["Hola."])):
+        await client.post("/v1/chat/completions", json={
+            "model": "tutoria",
+            "messages": [{"role": "user", "content": "Hola"}],
+            "stream": True,
+        })
+
+    sessions = {s.id: s for s in await _sessions_of(db, student.id)}
+    assert len(sessions) == 2
+    assert sessions[stale.id].status == "completed"
+    assert sessions[stale.id].ended_at == stale.started_at
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_does_not_reuse_completed_session(client, db, seeded_prompts):
+    student = await _create_student(db, "Ana", "ana@test.com")
+    finished = await _create_session(db, student.id, last_activity_minutes_ago=5)
+    await client.post(f"/api/sessions/{finished.id}/end")
+
+    with patch(LLM_PATCH, return_value=_StreamingProvider(["Hola."])):
+        await client.post("/v1/chat/completions", json={
+            "model": "tutoria",
+            "messages": [{"role": "user", "content": "Hola"}],
+            "stream": True,
+        })
+
+    sessions = await _sessions_of(db, student.id)
+    assert len(sessions) == 2
+    assert len([s for s in sessions if s.status == "active"]) == 1
