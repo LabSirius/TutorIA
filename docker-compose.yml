@@ -34,6 +34,11 @@ services:
       # Keep the model in memory between turns; the default (5m) unloads it
       # during normal pauses and the next reply pays the reload.
       OLLAMA_KEEP_ALIVE: 30m
+      # Context window for every turn. Without it Ollama picks 4096 on CPU and,
+      # once a session outgrows it, shifts out older context mid-reply; the
+      # shift also invalidates the prompt cache, so every later turn
+      # re-processes the whole prompt. The full session history must fit.
+      OLLAMA_CONTEXT_LENGTH: 8192
     volumes:
       - tutoria_ollama_data:/root/.ollama
     healthcheck:
