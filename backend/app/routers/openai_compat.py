@@ -1,11 +1,15 @@
 """OpenAI-compatible Chat Completions endpoint (Open edX AI Extensions, option B).
 
 Lets the Open edX AI Extensions framework use TutorIA as its LLM provider. It is
-only a transport: every turn is delegated to chat_service (process_chat_turn, the
-same code /api/chat and the MCP tool use, or stream_chat_turn for stream=true,
-which forwards LLM tokens as they are generated). TutorIA keeps its own session history,
+only a transport: every turn is delegated to chat_service.stream_chat_turn (the
+same pedagogy as process_chat_turn, used by /api/chat and the MCP tool), which
+yields LLM tokens as they are generated. TutorIA keeps its own session history,
 so only the last user message of the request is used; the history the framework
-sends is ignored.
+sends is ignored. The session continues while active (resolve_active_session).
+
+Each turn runs as the student's registered generation (generation_registry):
+Open edX does not forward browser disconnects, so a new request of the same
+student cancels the previous generation instead of letting it run on in Ollama.
 """
 import asyncio
 import json
@@ -17,21 +21,19 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import database
-from app.db.database import get_db
 from app.services.chat_service import (
     SessionNotFound,
     StudentNotFound,
-    process_chat_turn,
     resolve_active_session,
     stream_chat_turn,
 )
+from app.services.generation_registry import generations
 
 logger = logging.getLogger(__name__)
 
@@ -142,15 +144,45 @@ def _split_for_streaming(text: str) -> list[str]:
     return re.findall(r"\S+\s*|\s+", text)
 
 
-async def _tutor_reply(db: AsyncSession, request: ChatCompletionRequest, message: str) -> str:
+# Last item a generation puts on its queue.
+_END = object()
+
+
+async def _run_generation(queue: asyncio.Queue, student_id: int, message: str) -> None:
+    """Run one turn, putting its text deltas on `queue`, then an error if any, then _END.
+
+    Runs as the student's registered task, so a newer request (or this request's
+    client disconnecting) cancels it: stream_chat_turn then closes the LLM stream
+    and persists the partial reply as interrupted.
+    """
+    try:
+        # The task owns its db session; it can outlive the request that started it.
+        async with database.async_session() as db:
+            session_id = await resolve_active_session(db, student_id)
+            async for token in stream_chat_turn(db, student_id, message, session_id):
+                queue.put_nowait(token)
+    except Exception as exc:
+        queue.put_nowait(exc)
+    finally:
+        queue.put_nowait(_END)
+
+
+async def _start_generation(request: ChatCompletionRequest, message: str) -> tuple[asyncio.Task, asyncio.Queue]:
     student_id = _resolve_student_id(request.user)
-    session_id = await resolve_active_session(db, student_id)
-    result = await process_chat_turn(db, student_id, message, session_id)
-    return result.response
+    queue: asyncio.Queue = asyncio.Queue()
+    task = await generations.start(
+        student_id, lambda: _run_generation(queue, student_id, message)
+    )
+    return task, queue
 
 
-async def _next_token(tokens: AsyncIterator[str]) -> str | None:
-    return await anext(tokens, None)
+async def _stop_generation(task: asyncio.Task | None) -> None:
+    # Shielded: under anyio cancellation (client disconnect) every await would
+    # be cancelled again before the interrupted turn is persisted.
+    with anyio.CancelScope(shield=True):
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.wait({task})
 
 
 async def _stream_completion(
@@ -167,43 +199,35 @@ async def _stream_completion(
         for piece in _split_for_streaming(WELCOME_MESSAGE):
             yield _chunk(completion_id, created, model, {"content": piece})
     else:
-        # The stream owns its db session: after a disconnect this generator may
-        # be closed late, when the request's own session is already gone.
-        db = database.async_session()
-        tokens = None
-        first_token = None
+        task = None
         try:
-            student_id = _resolve_student_id(request.user)
-            session_id = await resolve_active_session(db, student_id)
-            tokens = stream_chat_turn(db, student_id, message, session_id)
-
-            # SSE comments keep proxies and clients from timing out the
-            # connection until the first token (prompt processing on CPU is slow).
-            first_token = asyncio.create_task(_next_token(tokens))
+            task, queue = await _start_generation(request, message)
+            has_content = False
             while True:
-                done, _ = await asyncio.wait({first_token}, timeout=KEEPALIVE_INTERVAL_SECONDS)
-                if done:
+                if has_content:
+                    item = await queue.get()
+                else:
+                    # SSE comments keep proxies and clients from timing out the
+                    # connection until the first token (prompt processing on CPU is slow).
+                    try:
+                        item = await asyncio.wait_for(queue.get(), KEEPALIVE_INTERVAL_SECONDS)
+                    except TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                if item is _END:
+                    # Also reached when a newer request of the student cancelled this one.
                     break
-                yield ": keepalive\n\n"
-
-            token = first_token.result()
-            while token is not None:
-                yield _chunk(completion_id, created, model, {"content": token})
-                token = await anext(tokens, None)
+                if isinstance(item, Exception):
+                    raise item
+                has_content = True
+                yield _chunk(completion_id, created, model, {"content": item})
         except Exception:
             logger.exception("Error generating a streamed chat completion")
             yield _chunk(completion_id, created, model, {"content": STREAM_ERROR_MESSAGE})
         finally:
-            # Also runs when the client disconnects. Closing the token stream
+            # Also runs when the client disconnects: cancelling the generation
             # stops Ollama and persists the partial reply as interrupted.
-            # Shielded: under anyio cancellation every await would be cancelled again.
-            with anyio.CancelScope(shield=True):
-                if first_token is not None and not first_token.done():
-                    first_token.cancel()
-                    await asyncio.wait({first_token})
-                if tokens is not None:
-                    await tokens.aclose()
-                await db.close()
+            await _stop_generation(task)
 
     yield _chunk(completion_id, created, model, {}, finish_reason="stop")
 
@@ -222,9 +246,7 @@ async def _stream_completion(
 
 
 @router.post("/chat/completions")
-async def chat_completions(
-    request: ChatCompletionRequest, db: AsyncSession = Depends(get_db)
-):
+async def chat_completions(request: ChatCompletionRequest):
     # The framework may open the chat with only system messages. Answer with a
     # static welcome without touching the LLM, the student or any session.
     has_user_message = any(m.role == "user" for m in request.messages)
@@ -245,12 +267,24 @@ async def chat_completions(
     if message is None:
         return _completion(request.model, WELCOME_MESSAGE)
 
+    # Same registered generation as streaming, so a newer request of the student
+    # can cancel this one too; its reply is then the partial text generated so far.
+    task = None
     try:
-        reply = await _tutor_reply(db, request, message)
-    except StudentNotFound:
-        raise HTTPException(status_code=404, detail="Student not found")
-    except SessionNotFound:
-        # Unreachable in practice: the session was just looked up for this student.
-        raise HTTPException(status_code=404, detail="Session not found")
+        task, queue = await _start_generation(request, message)
+        await asyncio.wait({task})
+    finally:
+        await _stop_generation(task)
 
-    return _completion(request.model, reply)
+    parts = []
+    while (item := queue.get_nowait()) is not _END:
+        if isinstance(item, StudentNotFound):
+            raise HTTPException(status_code=404, detail="Student not found")
+        if isinstance(item, SessionNotFound):
+            # Unreachable in practice: the session was just resolved for this student.
+            raise HTTPException(status_code=404, detail="Session not found")
+        if isinstance(item, Exception):
+            raise item
+        parts.append(item)
+
+    return _completion(request.model, "".join(parts))

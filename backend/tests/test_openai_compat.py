@@ -16,9 +16,14 @@ def _default_student_is_1(monkeypatch):
 
 
 def _mock_llm_provider(reply: str):
-    """A stand-in LLM provider whose generate() returns a fixed reply."""
+    """A stand-in LLM provider that returns (generate) or streams (stream) a fixed reply."""
     provider = MagicMock()
     provider.generate = AsyncMock(return_value=reply)
+
+    async def stream(*args, **kwargs):
+        yield reply
+
+    provider.stream = MagicMock(side_effect=stream)
     return provider
 
 
@@ -170,7 +175,7 @@ async def test_chat_completions_welcome_without_user_message(client, db):
     provider = _mock_llm_provider("No debería usarse.")
 
     with patch(LLM_PATCH, return_value=provider), patch(
-        "app.routers.openai_compat.process_chat_turn", new_callable=AsyncMock
+        "app.routers.openai_compat.stream_chat_turn"
     ) as chat_turn:
         response = await client.post("/v1/chat/completions", json={
             "model": "tutoria",
@@ -193,6 +198,7 @@ async def test_chat_completions_welcome_without_user_message(client, db):
     assert WELCOME_MESSAGE == "¡Hola! Soy TutorIA. ¿En qué tema quieres que trabajemos hoy?"
     chat_turn.assert_not_called()
     provider.generate.assert_not_called()
+    provider.stream.assert_not_called()
     assert await db.scalar(select(func.count()).select_from(Session)) == 0
     assert await db.scalar(select(func.count()).select_from(Student)) == 1
 
@@ -305,8 +311,8 @@ async def test_chat_completions_stream_welcome_without_user_message(client, db):
     provider = _mock_llm_provider("No debería usarse.")
 
     with patch(LLM_PATCH, return_value=provider), patch(
-        "app.routers.openai_compat.process_chat_turn", new_callable=AsyncMock
-    ) as chat_turn, patch("app.routers.openai_compat.stream_chat_turn") as stream_turn:
+        "app.routers.openai_compat.stream_chat_turn"
+    ) as stream_turn:
         response = await client.post("/v1/chat/completions", json={
             "model": "tutoria",
             "messages": [{"role": "system", "content": "Eres un asistente."}],
@@ -319,9 +325,9 @@ async def test_chat_completions_stream_welcome_without_user_message(client, db):
     assert _streamed_content(events) == WELCOME_MESSAGE
     assert events[-2]["choices"][0]["finish_reason"] == "stop"
     assert events[-1] == "[DONE]"
-    chat_turn.assert_not_called()
     stream_turn.assert_not_called()
     provider.generate.assert_not_called()
+    provider.stream.assert_not_called()
     assert await db.scalar(select(func.count()).select_from(Session)) == 0
 
 
@@ -463,7 +469,8 @@ async def test_chat_completions_stream_disconnect_saves_partial_reply(
         await stream.aclose()
 
     await _assert_interrupted_turn(db, student.id, provider)
-    assert provider.yielded == 2
+    # The generation runs in its own task and may be a token ahead of the client.
+    assert provider.yielded >= 2
     gamification.award_xp.assert_not_awaited()
     gamification.update_streak.assert_not_awaited()
     gamification.check_and_award_badges.assert_not_awaited()
@@ -620,3 +627,142 @@ async def test_chat_completions_does_not_reuse_completed_session(client, db, see
     sessions = await _sessions_of(db, student.id)
     assert len(sessions) == 2
     assert len([s for s in sessions if s.status == "active"]) == 1
+
+
+async def _wait_until(condition, timeout: float = 5.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not condition():
+        assert asyncio.get_running_loop().time() < deadline, "condition not met in time"
+        await asyncio.sleep(0.01)
+
+
+async def _assert_first_turn_cancelled_by_second(db, student_id, first, second):
+    """History: first turn interrupted with its partial reply, then the second, complete."""
+    assert first.closed
+    assert 0 < first.yielded < len(first.tokens)
+    produced = first.yielded
+    await asyncio.sleep(0.3)
+    assert first.yielded == produced  # the cancelled generation stays stopped
+
+    sessions = await _sessions_of(db, student_id)
+    assert len(sessions) == 1
+    history = sessions[0].message_history
+    assert [(m["role"], m["content"]) for m in history] == [
+        ("user", "Primera pregunta"),
+        ("assistant", "".join(first.tokens[:produced])),
+        ("user", "Segunda pregunta"),
+        ("assistant", "".join(second.tokens)),
+    ]
+    assert history[1]["interrupted"] is True
+    assert history[1]["prompt_key"]
+    assert "interrupted" not in history[3]
+
+
+@pytest.mark.asyncio
+async def test_new_request_cancels_previous_generation_of_same_student(
+    client, db, seeded_prompts
+):
+    student = await _create_student(db, "Ana", "ana@test.com")
+    first = _StreamingProvider([f" palabra{i}" for i in range(50)], delay=0.1)
+    second = _StreamingProvider(["Respuesta", " completa."])
+
+    with patch(LLM_PATCH, side_effect=[first, second]), patch(
+        GAMIFICATION_PATCH, new_callable=AsyncMock
+    ) as gamification:
+        first_request = asyncio.create_task(client.post("/v1/chat/completions", json={
+            "model": "tutoria",
+            "messages": [{"role": "user", "content": "Primera pregunta"}],
+            "stream": True,
+        }))
+        await _wait_until(lambda: first.yielded >= 2)
+        second_response = await client.post("/v1/chat/completions", json={
+            "model": "tutoria",
+            "messages": [{"role": "user", "content": "Segunda pregunta"}],
+            "stream": True,
+        })
+        first_response = await first_request
+
+    # The superseded stream ends cleanly with what it had generated.
+    first_events = _sse_events(first_response.text)
+    assert first_events[-1] == "[DONE]"
+    assert first_events[-2]["choices"][0]["finish_reason"] == "stop"
+    assert _streamed_content(first_events) == "".join(first.tokens[:first.yielded])
+
+    second_events = _sse_events(second_response.text)
+    assert _streamed_content(second_events) == "Respuesta completa."
+    assert second_events[-1] == "[DONE]"
+
+    await _assert_first_turn_cancelled_by_second(db, student.id, first, second)
+    # Gamification only for the completed turn.
+    gamification.award_xp.assert_awaited_once()
+    gamification.update_streak.assert_awaited_once()
+    gamification.check_and_award_badges.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_new_request_cancels_previous_non_streamed_generation(
+    client, db, seeded_prompts
+):
+    student = await _create_student(db, "Ana", "ana@test.com")
+    first = _StreamingProvider([f" palabra{i}" for i in range(50)], delay=0.1)
+    second = _StreamingProvider(["Respuesta", " completa."])
+
+    with patch(LLM_PATCH, side_effect=[first, second]), patch(
+        GAMIFICATION_PATCH, new_callable=AsyncMock
+    ) as gamification:
+        first_request = asyncio.create_task(client.post("/v1/chat/completions", json={
+            "model": "tutoria",
+            "messages": [{"role": "user", "content": "Primera pregunta"}],
+        }))
+        await _wait_until(lambda: first.yielded >= 2)
+        second_response = await client.post("/v1/chat/completions", json={
+            "model": "tutoria",
+            "messages": [{"role": "user", "content": "Segunda pregunta"}],
+        })
+        first_response = await first_request
+
+    assert first_response.status_code == 200
+    assert first_response.json()["choices"][0]["message"]["content"] == "".join(
+        first.tokens[:first.yielded]
+    )
+    assert second_response.json()["choices"][0]["message"]["content"] == "Respuesta completa."
+
+    await _assert_first_turn_cancelled_by_second(db, student.id, first, second)
+    gamification.award_xp.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_requests_of_different_students_do_not_cancel_each_other(
+    client, db, seeded_prompts
+):
+    ana = await _create_student(db, "Ana", "ana@test.com")
+    luis = await _create_student(db, "Luis", "luis@test.com")
+    tokens = [f" palabra{i}" for i in range(8)]
+    providers = []
+
+    def new_provider(*args, **kwargs):
+        providers.append(_StreamingProvider(tokens, delay=0.05))
+        return providers[-1]
+
+    with patch(LLM_PATCH, side_effect=new_provider), patch(
+        GAMIFICATION_PATCH, new_callable=AsyncMock
+    ) as gamification:
+        responses = await asyncio.gather(*(
+            client.post("/v1/chat/completions", json={
+                "model": "tutoria",
+                "messages": [{"role": "user", "content": "Hola"}],
+                "user": str(student.id),
+                "stream": True,
+            })
+            for student in (ana, luis)
+        ))
+
+    assert len(providers) == 2
+    assert all(p.yielded == len(tokens) for p in providers)
+    for response in responses:
+        assert _streamed_content(_sse_events(response.text)) == "".join(tokens)
+    for student in (ana, luis):
+        (session,) = await _sessions_of(db, student.id)
+        assert [m["content"] for m in session.message_history] == ["Hola", "".join(tokens)]
+        assert "interrupted" not in session.message_history[1]
+    assert gamification.award_xp.await_count == 2
